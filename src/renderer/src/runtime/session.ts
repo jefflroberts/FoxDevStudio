@@ -671,6 +671,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
         noshow,
         args,
         cursors: compiled.doc.data,
+        dataEnvironment: true,
         // ^oWindows[1,0] among the form's own members: an array property, dimensioned before
         // anything can read it
         arrays: compiled.doc.meta?.vfp?.arrays,

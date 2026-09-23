@@ -549,12 +549,20 @@ function applyClass(row: Row, resolved: ResolvedClass): [Row, Row[]] {
     return undefined;
   };
 
-  const own: string[] = [];
-  for (const entry of parseVfpProperties(row.properties)) {
-    const target = entry.name.includes('.') ? addressed(entry.name) : undefined;
-    if (target) target.member.properties = `${target.member.properties}\n${target.rest} = ${entry.raw}`;
-    else own.push(`${entry.name} = ${entry.raw}`);
-  }
+  // An ancestor between this class and the one that made a member writes its overrides the same
+  // way - `frmInstall` sets `pgfSteps.Page2.Name` on a pageframe `frmWizard` made - so every
+  // memo in the chain is routed, oldest first, for a later line to win as it does in one memo.
+  const routed = (properties: string): string => {
+    const kept: string[] = [];
+    for (const entry of parseVfpProperties(properties)) {
+      const target = entry.name.includes('.') ? addressed(entry.name) : undefined;
+      if (target) target.member.properties = `${target.member.properties}\n${target.rest} = ${entry.raw}`;
+      else kept.push(`${entry.name} = ${entry.raw}`);
+    }
+    return kept.join('\n');
+  };
+  const inherited = resolved.chain.map((r) => routed(withoutName(r.properties)));
+  const own = routed(row.properties);
 
   // The merged memo holds procedures out of several files, and each of them is compiled with the
   // header its own file named - so which file each one came from has to be written down before
@@ -578,7 +586,7 @@ function applyClass(row: Row, resolved: ResolvedClass): [Row, Row[]] {
     ...row,
     methodIncludes,
     // a class's own Name is the class's, never the instance's: that comes from OBJNAME
-    properties: [...resolved.chain.map((r) => withoutName(r.properties)), own.join('\n')].filter((p) => p.trim() !== '').join('\n'),
+    properties: [...inherited, own].filter((p) => p.trim() !== '').join('\n'),
     methods: [...resolved.chain.map((r) => r.methods), row.methods].filter((m) => m.trim() !== '').join('\n'),
     custom: [...resolved.chain.map((r) => r.custom), row.custom].filter((c) => c.trim() !== '').join('\n'),
   };
