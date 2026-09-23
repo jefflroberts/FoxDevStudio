@@ -306,9 +306,14 @@ pub enum HostRequest {
     /// came from has no such method.
     CallParentMethod {
         obj: u32,
-        /// The method being run, which is the one to look for above it.
+        /// The method being run, which is the one to look for above it: its event, with the
+        /// `#n` of an ancestor's copy when that is what is running.
         method: String,
         args: Vec<JsonValue>,
+        /// The whole name the running code was compiled under - `CLASS.EVENT` for a class of a
+        /// program - which says whose code it is, and so where above it to start looking.
+        #[serde(default)]
+        from: String,
     },
     /// `BUILD APP | EXE | DLL | MTDLL | PROJECT`: a project turned into the file that ships,
     /// or the project itself built out of the files it names. Resume with Null; a build that

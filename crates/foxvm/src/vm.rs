@@ -10080,11 +10080,11 @@ impl BuiltinCtx for Ctx<'_> {
     }
 
     fn running_method(&self) -> String {
-        // a method is compiled under "OBJECT.EVENT"; DODEFAULT() is about the event
+        // the whole of what it was compiled as: DODEFAULT() needs the event, and which class's
+        // code is running, which is what says where to look above it
         let env = env_index(self.fiber, self.fiber.frames.len() - 1);
         let f = &self.fiber.frames[env];
-        let name = self.vm.proto(f.module, f.func).display_name.clone();
-        name.rsplit('.').next().unwrap_or(&name).to_string()
+        self.vm.proto(f.module, f.func).display_name.clone()
     }
 
     fn com_setting(&self, obj: u32) -> i64 {

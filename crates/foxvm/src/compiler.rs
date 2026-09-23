@@ -2158,9 +2158,12 @@ impl ModuleCompiler {
             StmtKind::NoDefault => {
                 fb.emit(Instr::NoDefault);
             }
+            // `DODEFAULT()` on a line of its own runs the parent's code as the function form
+            // does, and the answer is dropped
             StmtKind::DoDefault(args) => {
-                let argc = self.args(fb, args, false, false);
-                fb.emit(Instr::DoDefault(argc));
+                let (id, _) = builtins::lookup("DODEFAULT").expect("DODEFAULT is a builtin");
+                let argc = self.args(fb, args, true, false);
+                fb.emit(Instr::CallBuiltin { id, argc });
                 fb.emit(Instr::Pop);
             }
             StmtKind::Text { target, additive, textmerge, noshow, raw } => {

@@ -197,6 +197,31 @@ describe('parseVfpMethods', () => {
       ].join('\n'),
     );
   });
+  it("keeps an overridden method's earlier versions for DODEFAULT to reach", () => {
+    // a class chain's memos arrive joined, the class the chain starts from first: the last
+    // definition is what runs, and the ones before it are its ancestors', nearest first
+    const memo = [
+      'PROCEDURE Init',
+      'grand = 1',
+      'ENDPROC',
+      'PROCEDURE Click',
+      'only = 1',
+      'ENDPROC',
+      'PROCEDURE init',
+      'parent = 1',
+      'ENDPROC',
+      'PROCEDURE INIT',
+      'own = 1',
+      'RETURN DODEFAULT()',
+      'ENDPROC',
+    ].join('\n');
+    expect(parseVfpMethods(memo)).toEqual({
+      INIT: 'own = 1\nRETURN DODEFAULT()',
+      'INIT#1': 'parent = 1',
+      'INIT#2': 'grand = 1',
+      Click: 'only = 1',
+    });
+  });
   it('ends a body at the next PROCEDURE when ENDPROC is missing', () => {
     const methods = parseVfpMethods('PROCEDURE Init\r\nx = 1\r\nPROCEDURE Click\r\ny = 2\r\nENDPROC');
     expect(methods).toEqual({ Init: 'x = 1', Click: 'y = 2' });

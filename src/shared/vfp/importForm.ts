@@ -200,13 +200,17 @@ const ENDPROC_LINE = /^\s*ENDPROC\s*$/i;
  * for events that only exist in the designer) are dropped.
  */
 export function parseVfpMethods(memo: string): Record<string, string> {
-  const out: Record<string, string> = {};
+  // Every definition, in the order written. A class chain's memos arrive joined, the class the
+  // chain starts from first, so one name written twice is an override: the last is the one the
+  // object runs, and the ones before it are what DODEFAULT() reaches. Those are kept as
+  // `Name#1` for the nearest ancestor, `Name#2` for the one above it, and so on.
+  const defined: { name: string; source: string }[] = [];
   let name: string | null = null;
   let body: string[] = [];
   const flush = () => {
     if (name === null) return;
     const source = trimBlankEdges(body).join('\n');
-    if (source.trim() !== '') out[name] = source;
+    if (source.trim() !== '') defined.push({ name, source });
     name = null;
     body = [];
   };
@@ -222,7 +226,29 @@ export function parseVfpMethods(memo: string): Record<string, string> {
     }
   }
   flush();
+
+  const levels = new Map<string, { name: string; source: string }[]>();
+  for (const d of defined) {
+    const key = d.name.toLowerCase();
+    const list = levels.get(key);
+    if (list) list.push(d);
+    else levels.set(key, [d]);
+  }
+  const out: Record<string, string> = {};
+  for (const list of levels.values()) {
+    const latest = list[list.length - 1]!;
+    out[latest.name] = latest.source;
+    for (let depth = 1; depth < list.length; depth++) out[`${latest.name}#${depth}`] = list[list.length - 1 - depth]!.source;
+  }
   return out;
+}
+
+/** An ancestor's copy of an overridden method, `Init#1`, as the event it is a copy of. */
+export function ancestorEvent(name: string): { event: string; depth: number } {
+  const hash = name.lastIndexOf('#');
+  if (hash < 0) return { event: name, depth: 0 };
+  const depth = Number(name.slice(hash + 1));
+  return Number.isInteger(depth) && depth > 0 ? { event: name.slice(0, hash), depth } : { event: name, depth: 0 };
 }
 
 /**
@@ -533,9 +559,19 @@ function applyClass(row: Row, resolved: ResolvedClass): [Row, Row[]] {
   // The merged memo holds procedures out of several files, and each of them is compiled with the
   // header its own file named - so which file each one came from has to be written down before
   // the memos become one string.
-  const methodIncludes: Record<string, string> = {};
+  // An ancestor's copy of an overridden method - `INIT#1` - was written in its own class's
+  // file, so it carries that file's header rather than the one the override came with.
+  const writers = new Map<string, string[]>();
   for (const from of [...resolved.chain, row]) {
-    for (const name of Object.keys(parseVfpMethods(from.methods))) methodIncludes[name.toUpperCase()] = from.include;
+    for (const name of Object.keys(parseVfpMethods(from.methods))) {
+      const key = name.toUpperCase();
+      writers.set(key, [...(writers.get(key) ?? []), from.include]);
+    }
+  }
+  const methodIncludes: Record<string, string> = {};
+  for (const [name, includes] of writers) {
+    methodIncludes[name] = includes[includes.length - 1]!;
+    for (let depth = 1; depth < includes.length; depth++) methodIncludes[`${name}#${depth}`] = includes[includes.length - 1 - depth]!;
   }
 
   const instance: Row = {
@@ -1408,8 +1444,11 @@ function declaredPropertyName(descriptor: ObjectDescriptor, name: string): strin
 function normaliseMethods(methods: Record<string, string>, descriptor: ObjectDescriptor): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, source] of Object.entries(methods)) {
-    const lower = name.toLowerCase();
-    out[descriptor.events.find((e) => e.name.toLowerCase() === lower)?.name ?? name] = source;
+    // an ancestor's copy is spelled as the event it is a copy of, and keeps its depth
+    const { event, depth } = ancestorEvent(name);
+    const lower = event.toLowerCase();
+    const spelled = descriptor.events.find((e) => e.name.toLowerCase() === lower)?.name ?? event;
+    out[depth > 0 ? `${spelled}#${depth}` : spelled] = source;
   }
   return out;
 }

@@ -471,6 +471,25 @@ export const useSessionStore = create<SessionState>((set, get) => {
     });
     useDebugStore.getState().attach(vm, scheduler);
 
+    /**
+     * A method of an object of a program's class: the class's own code, or the nearest class
+     * above it that has some. Each class's methods are compiled under the class's own name, so
+     * one that a class inherits without overriding is found under its parent's - measured, an
+     * object of `cc AS cb` runs cb's Greet, and cb's object runs ca's Who.
+     */
+    function dispatchUpClasses(module: number, className: string, obj: RuntimeObject, event: string, args: VmValue[]) {
+      const classes = definedClasses(module);
+      const seen = new Set<string>();
+      let name = className;
+      while (name !== '' && !seen.has(name.toLowerCase())) {
+        seen.add(name.toLowerCase());
+        const outcome = scheduler.dispatchClass(module, name, obj.path(), event, obj.handle, args);
+        if (outcome !== null) return outcome;
+        name = classes.find((c) => c.name.toLowerCase() === name.toLowerCase())?.baseClass ?? '';
+      }
+      return null;
+    }
+
     desktop.dispatch = (obj, event, args) => {
       // a control's code lives in its form's module; a formset's own lives in the formset's,
       // because each form of a formset is a document, and so is compiled, of its own
@@ -483,7 +502,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
       // of a library - keys them by the path from the document's own root. Which of the two a
       // module is, is a question about the module, not about whether the object has a class.
       const own = owner.className && definedClasses(owner.module).length > 0
-        ? scheduler.dispatchClass(owner.module, owner.className, obj.path(), event, obj.handle, args ?? [])
+        ? dispatchUpClasses(owner.module, owner.className, obj, event, args ?? [])
         : scheduler.dispatch(owner.module, obj.path(), event, obj.handle, args ?? []);
 
       const bound = desktop.boundHandlers(obj.handle, event);
@@ -845,13 +864,30 @@ export const useSessionStore = create<SessionState>((set, get) => {
           return result;
         }
 
-        // DODEFAULT(): the method of the same name on the class this one was built from. The
-        // classes of a module are each compiled under their own name, so what this has to find
-        // is the first class above this one that has the method at all.
+        // DODEFAULT(): the next class up that has code for the method being run, called with the
+        // same THIS. Measured in Visual FoxPro 9: the arguments go with it, its answer is the
+        // answer, a class with no code for the method is passed over, and past the last one the
+        // answer is .T. Where to start looking is the class whose code is running, not the
+        // object's: an inherited method that calls up must not find itself again.
         case 'CallParentMethod': {
           const target = desktop.object(request.obj);
           const form = target?.form();
-          if (!target || !form || form.module < 0 || !form.className) return false;
+          if (!target || !form || form.module < 0) return true;
+          const settle = (outcome: ReturnType<typeof scheduler.dispatch>) =>
+            outcome instanceof Promise ? outcome.then((o) => o.value) : outcome!.value;
+
+          // An object of a class library carries its ancestors' code in its own module: the
+          // import kept an overridden method's earlier versions as `Init#1`, `Init#2`, nearest
+          // first. The next one up from the version running is the parent's.
+          const running = /^(.*?)(?:#(\d+))?$/.exec(request.method)!;
+          const event = running[1]!;
+          const depth = Number(running[2] ?? 0);
+          const copy = scheduler.dispatch(form.module, target.path(), `${event}#${depth + 1}`, target.handle, request.args);
+          if (copy !== null) return settle(copy);
+
+          // A class of a program: each class's methods are compiled under the class's own name,
+          // so the chain is walked from the class that wrote the running code.
+          if (!form.className) return true;
           const classes = classesFor(form.module, {
             name: form.className,
             baseClass: '',
@@ -860,27 +896,19 @@ export const useSessionStore = create<SessionState>((set, get) => {
             methods: [],
             module: form.module,
           });
-          let name = form.className.toLowerCase();
+          const writer = (request.from ?? '').split('.')[0]!.toLowerCase();
+          let name = classes.some((c) => c.name.toLowerCase() === writer) ? writer : form.className.toLowerCase();
           const seen = new Set<string>();
           while (name !== '' && !seen.has(name)) {
             seen.add(name);
             const above = classes.find((c) => c.name.toLowerCase() === name)?.baseClass ?? '';
             const parent = classes.find((c) => c.name.toLowerCase() === above.toLowerCase());
-            if (!parent) return false;
+            if (!parent) return true;
             name = parent.name.toLowerCase();
-            const outcome = scheduler.dispatchClass(
-              form.module,
-              parent.name,
-              target.path(),
-              request.method,
-              target.handle,
-              request.args,
-            );
-            if (outcome !== null) {
-              return outcome instanceof Promise ? outcome.then((o) => o.value) : outcome.value;
-            }
+            const outcome = scheduler.dispatchClass(form.module, parent.name, target.path(), event, target.handle, request.args);
+            if (outcome !== null) return settle(outcome);
           }
-          return false;
+          return true;
         }
 
         case 'AddProperty':
@@ -1094,7 +1122,9 @@ export const useSessionStore = create<SessionState>((set, get) => {
 
             if (!built.nonVisual) showDesktop();
             const instance = desktop.instantiate(built.form, definition.module ?? -1, {
-              className: definition.name,
+              // measured: a program's class answers for its Class with the first letter capital
+              // and the rest small, however DEFINE CLASS wrote it - `mYthingHere` is Mythinghere
+              className: definition.name.charAt(0).toUpperCase() + definition.name.slice(1).toLowerCase(),
               nonVisual: built.nonVisual,
               args: request.args,
             });
