@@ -3844,9 +3844,11 @@ impl ModuleCompiler {
                 let n = self.subscripts(fb, args, e.span);
                 fb.emit(Instr::LoadIndex(n));
             }
+            // `@var` reaches a method as the variable itself: an object's method of FoxPro code
+            // writes to it as a procedure does, which is how CodeMine hands back a second answer
             ExprKind::MethodCall { obj, name, args } => {
                 self.expr(fb, obj);
-                let argc = self.args(fb, args, false, false);
+                let argc = self.args(fb, args, true, false);
                 let m = self.member(name);
                 fb.emit(Instr::CallMethod { name: m, argc });
             }

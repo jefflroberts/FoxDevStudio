@@ -396,6 +396,46 @@ describe('DEFINE CLASS', () => {
     expect(printed).toEqual(["caught here: Variable 'NOSUCHVARIABLE' is not found."]);
   });
 
+  it('carries on past an error raised inside an Error method, however it was reached', async () => {
+    // Measured in Visual FoxPro 9: an ERROR raised in an Error method - called directly, or
+    // reached as an ancestor's through DODEFAULT() - goes neither to Error again nor to ON
+    // ERROR; the method carries on at its next line. This was the loop in CodeMine's handler.
+    await useSessionStore.getState().execute(
+      source,
+      [
+        'ON ERROR ? "ON ERROR got", ERROR()',
+        'o = CREATEOBJECT("cerr")',
+        'o.Error(1098, "direct", 1)',
+        '? "count", o.nCount',
+        'o = CREATEOBJECT("cchild")',
+        'o.Error(1098, "direct", 1)',
+        '? "count", o.nCount',
+        'RETURN',
+        '',
+        'DEFINE CLASS cerr AS Custom',
+        '  nCount = 0',
+        '  PROCEDURE Error(nError, cMethod, nLine)',
+        '    THIS.nCount = THIS.nCount + 1',
+        '    ? "in Error", THIS.nCount',
+        '    IF THIS.nCount < 4',
+        '      ERROR "raised inside Error"',
+        '    ENDIF',
+        '    ? "after ERROR", THIS.nCount',
+        '  ENDPROC',
+        'ENDDEFINE',
+        '',
+        'DEFINE CLASS cchild AS cerr',
+        '  PROCEDURE Error(nError, cMethod, nLine)',
+        '    ? "child Error"',
+        '    DODEFAULT(nError, cMethod, nLine)',
+        '  ENDPROC',
+        'ENDDEFINE',
+      ].join('\n'),
+    );
+    const printed = useSessionStore.getState().output.filter((o) => o.kind === 'output').map((o) => o.text.replace(/\s+/g, ' ').trim());
+    expect(printed).toEqual(['in Error 1', 'after ERROR 1', 'count 1', 'child Error', 'in Error 1', 'after ERROR 1', 'count 1']);
+  });
+
   it('does not hand an error inside the Error method back to itself', async () => {
     await useSessionStore.getState().execute(
       source,

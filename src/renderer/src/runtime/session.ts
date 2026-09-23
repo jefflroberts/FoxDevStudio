@@ -20,7 +20,7 @@ import { baseName, CompileFailure, formHeaderRefs, formMethodSources, requireByt
 import type { MenuDocument, MenuItem } from '@shared/menu/schema';
 import type { FormCursor, FormDocument, FormNode, FormRelation } from '@shared/form/schema';
 import { formsetDocumentNames } from '@shared/form/formset';
-import { displayValue, type VmValue } from '@shared/runtime/values';
+import { argValue, displayValue, type VmValue } from '@shared/runtime/values';
 import { buildClassInstance } from '@shared/runtime/classInstance';
 import { isNonVisualBaseClass, resolveInheritance, type VfpClassDef } from '@shared/runtime/classDef';
 import { classAsNode } from '@shared/classlib/schema';
@@ -418,6 +418,18 @@ export const useSessionStore = create<SessionState>((set, get) => {
      * the class's own name, and every object of it runs that module. The key holds the file as
      * well as the class, because two libraries may each have a class of the same name.
      */
+    /** The folders the project's class libraries are in, each once, in the order the project lists them. */
+    function projectClassFolders(): string[] {
+      const project = useProjectStore.getState();
+      const folders: string[] = [];
+      for (const item of project.doc?.items ?? []) {
+        if (item.kind !== 'class') continue;
+        const folder = dirname(project.resolvePath(item.path));
+        if (!folders.some((f) => f.toLowerCase() === folder.toLowerCase())) folders.push(folder);
+      }
+      return folders;
+    }
+
     const classLibraries = new ClassLibraries(async (given) => {
       const path = await reach(at(given));
       if (await getApi().files.exists(path).catch(() => false)) return readVfpTable(path);
@@ -442,7 +454,14 @@ export const useSessionStore = create<SessionState>((set, get) => {
       // the product reports a class library it cannot find as a missing file, not as a class
       // that does not exist - measured, error 1 with the name it was given
       throw new HostError(1, `File '${given}' does not exist.`);
-    }, ffcDir === '' ? [] : [ffcDir]);
+    },
+      // A class names the library it stands on by a path from wherever the developer's copy sat,
+      // and that seldom leads anywhere now: `..\..\common50\cmapp.vcx` from `source\`. The
+      // project's own class libraries say where those files really are, as they did when the
+      // project was imported, so their folders are looked in before the Foundation Classes.
+      [...projectClassFolders(), ...(ffcDir === '' ? [] : [ffcDir])],
+      (library, from) => print({ kind: 'error', text: `${basename(from)}: class library "${library}" was not found; its classes are missing what they inherit from it` }),
+    );
     const classModules = new Map<string, number>();
 
     const scheduler = new Scheduler(vm, { perform: (request, ctx) => perform(request, ctx) }, {
@@ -854,12 +873,15 @@ export const useSessionStore = create<SessionState>((set, get) => {
 
         case 'CallMethod': {
           const target = desktop.object(request.obj);
-          if (target?.hasClassMethod(request.name)) {
+          // FoxPro code of the object's own - a program's class, or a class out of a library -
+          // is given the arguments as they came, so a variable passed with @ is the variable
+          if (target && (target.hasClassMethod(request.name) || target.hasOwnMethod(request.name))) {
             const outcome = desktop.dispatch(target, request.name, request.args);
             if (outcome === null) return null;
             return outcome instanceof Promise ? outcome.then((o) => o.value) : outcome.value;
           }
-          const result = desktop.callMethod(request.obj, request.name, request.args);
+          // everything else is answered here, and wants values
+          const result = desktop.callMethod(request.obj, request.name, request.args.map(argValue));
           if (result === undefined) throw new HostError(1925, `Unknown member ${request.name.toUpperCase()}.`);
           return result;
         }

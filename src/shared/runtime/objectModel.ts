@@ -1810,6 +1810,12 @@ export class Desktop implements HostReads {
         return 'FoxDev Studio';
       case 'VISIBLE':
         return true;
+      // The main window's handle, which a program passes to the Windows API - CodeMine makes a
+      // hidden marker window with it as the parent, so a second copy of the application can
+      // find the first. The IDE's window handle cannot be had from here, and 0 is what Windows
+      // reads as no parent at all, so the call still does what it is for.
+      case 'HWND':
+        return 0;
       case 'APPLICATION':
         return { $obj: APP_HANDLE };
       // `_SCREEN` is a Form - it answers "Form" for its own BaseClass - so everything a form
@@ -2722,7 +2728,10 @@ export class Desktop implements HostReads {
     const type = baseClassToControlType(info.baseClass);
     const nonVisual = isNonVisualBaseClass(info.baseClass) || type === null;
 
-    if (type === 'Form' || nonVisual) {
+    // A non-visual class standing on its own is an object of its own; one added to a container -
+    // `THIS.NewObject('oContextMenu', 'cmContextMenuManager')`, a Custom - is a member like any
+    // control, when its base class is one a form can hold
+    if (type === 'Form' || (nonVisual && !(into && type !== null))) {
       // a form is a window: it is not a member of anything, which is what the product says too
       if (into) throw new HostError(1733, `Class definition ${info.className.toUpperCase()} is not found.`);
       const instance = this.instantiate(node, module, { className: spellClass(info.className), nonVisual, noshow: true, arrays: info.arrays });

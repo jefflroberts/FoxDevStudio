@@ -310,7 +310,8 @@ fn f_dodefault(c: &mut dyn BuiltinCtx, a: Vec<Value>) -> Result<BuiltinResult, R
     if method.is_empty() {
         return Err(RtError::new(1928, "DODEFAULT() can only be used inside a method"));
     }
-    let args = a.iter().map(JsonValue::from_value).collect();
+    // `DODEFAULT(@m.nError, ...)` hands the parent the same variables
+    let args = a.iter().map(JsonValue::from_arg).collect();
     Ok(BuiltinResult::Suspend(HostRequest::CallParentMethod { obj, method, args, from }))
 }
 

@@ -271,6 +271,9 @@ pub struct Vm {
     /// The functions those libraries added: the name a program calls, and which function of
     /// which library it is. A name loaded twice is the later one, as the product's is.
     library_funcs: HashMap<String, (u32, u32)>,
+    /// The last error raised anywhere in the session, for ERROR() and MESSAGE() asked from a
+    /// fiber that has not raised one of its own - a class's Error method, run by the host.
+    last_error: Option<RtError>,
     /// `SET PROCEDURE TO`: the programs whose routines a bare call finds after the current
     /// program's own, in the order they are looked in - which is the order they were listed.
     procedure_files: Vec<u32>,
@@ -1564,6 +1567,7 @@ impl Vm {
             libraries: Vec::new(),
             library_funcs: HashMap::new(),
             procedure_files: Vec::new(),
+            last_error: None,
             procedure_only: HashSet::new(),
             last_opened: None,
             index_build: None,
@@ -2495,6 +2499,7 @@ impl Vm {
     /// Gives the error to the nearest handler that wants it.
     fn handle(&mut self, host: &mut dyn Host, fb: &mut Fiber, err: RtError, floor: usize) -> Option<Step> {
         fb.last_error = Some(err.clone());
+        self.last_error = Some(err.clone());
         // An error raised while a HAVING predicate was running leaves the query saying that no
         // record is current. A CATCH that swallows it must not leave every later field read
         // complaining, so the clause is no longer running the moment the error is handed on.
@@ -2514,6 +2519,24 @@ impl Vm {
             if !caught_deeper {
                 fb.query_unwind = fb.query.take();
             }
+        }
+        // Measured in Visual FoxPro 9: an error raised inside an object's Error method - whether
+        // the runtime called it, the program called it, or DODEFAULT() reached an ancestor's - is
+        // not handed to Error again, nor to ON ERROR. The method carries on at its next statement.
+        // A TRY inside it still catches, and is nearer.
+        if let Some(ix) = self.running_error_method(fb, floor)
+            && !fb.handlers.last().is_some_and(|h| h.frame >= ix)
+        {
+            let at = fb.frames.len() - 1;
+            let (resume_pc, stmt_sp) = {
+                let fr = &fb.frames[at];
+                let code = &self.proto(fr.module, fr.func).code;
+                let next = (fr.pc..code.len()).find(|&i| matches!(code[i], Instr::Stmt(_))).unwrap_or(code.len().saturating_sub(2));
+                (next, fr.stmt_sp)
+            };
+            fb.stack.truncate(stmt_sp);
+            fb.frames[at].pc = resume_pc;
+            return None;
         }
         if let Some(step) = self.class_error_method(host, fb, &err, floor) {
             return Some(step);
@@ -2556,6 +2579,21 @@ impl Vm {
             return self.run_on_error(fb, &text);
         }
         Some(Step::Error(err))
+    }
+
+    /// The innermost frame, at or above `floor`, that is running some object's Error method -
+    /// its own, or an ancestor's copy `ERROR#n` - when the error was raised in that very frame.
+    fn running_error_method(&self, fb: &Fiber, floor: usize) -> Option<usize> {
+        let at = fb.frames.len().checked_sub(1)?;
+        if at < floor {
+            return None;
+        }
+        let fr = &fb.frames[at];
+        fr.this?;
+        let name = &self.proto(fr.module, fr.func).display_name;
+        let event = name.rsplit('.').next().unwrap_or(name).to_ascii_uppercase();
+        let base = event.split('#').next().unwrap_or(&event);
+        (base == "ERROR").then_some(at)
     }
 
     /// VFP hands an error raised inside a method to the object's own `Error` method, unless a
@@ -3840,7 +3878,7 @@ impl Vm {
                 return Ok(Flow::Suspend(HostRequest::CallMethod {
                     obj: h.0,
                     name: name.clone(),
-                    args: args.iter().map(JsonValue::from_value).collect(),
+                    args: args.iter().map(JsonValue::from_arg).collect(),
                 }));
             }
             Instr::PushWith => {
@@ -10169,7 +10207,9 @@ impl BuiltinCtx for Ctx<'_> {
         self.vm.load_name(self.fiber, upper_name)
     }
     fn last_error(&self) -> Option<RtError> {
-        self.fiber.last_error.clone()
+        // ERROR() and MESSAGE() are the session's last error, not this fiber's: a class's Error
+        // method is run on a fiber of its own, and asks them about the error that sent it there
+        self.fiber.last_error.clone().or_else(|| self.vm.last_error.clone())
     }
     fn on_error_command(&self) -> Option<String> {
         self.vm.on_error.clone()
