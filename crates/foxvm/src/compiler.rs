@@ -3642,6 +3642,22 @@ impl ModuleCompiler {
                         continue;
                     }
                     ExprKind::Var(_) => self.warning(a.expr.span, "Argument is passed by value here"),
+                    // `@m.uArg1`: the `m.` says a memory variable, which is what `@` passes, so
+                    // it is the variable by reference - unless a local is really called M
+                    ExprKind::Member { obj, name }
+                        if a.by_ref
+                            && matches!(&obj.kind, ExprKind::Var(base) if base.upper == "M")
+                            && fb.local("M").is_none() =>
+                    {
+                        if allow_ref {
+                            let v = self.var_target(fb, name);
+                            fb.emit(Instr::Ref(v));
+                            continue;
+                        }
+                        // where a plain `@name` is passed by value - a method of an object - so
+                        // is this, and with the same warning
+                        self.warning(a.expr.span, "Argument is passed by value here");
+                    }
                     _ if a.by_ref => self.error(a.expr.span, "Only a variable can be passed by reference"),
                     _ => {}
                 }

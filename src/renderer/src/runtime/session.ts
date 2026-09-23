@@ -212,6 +212,11 @@ export const runtimeUi = {
   newDocument: async (kind: string, _path: string): Promise<void> => {
     throw new Error(`CREATE ${kind.toUpperCase()} needs a designer, which the player has not`);
   },
+  /**
+   * The development environment rather than a built application: `VERSION(2)` answers 2 here
+   * and 0 in the player, and programs branch on it to find their source.
+   */
+  development: false,
 };
 const showDesktop = () => runtimeUi.showDesktop();
 
@@ -335,9 +340,17 @@ export const useSessionStore = create<SessionState>((set, get) => {
     desktop.runLine = (text) => runSnippet(text, 'line').then(() => undefined);
     desktop.setVariable = (name, value) => vm.setGlobal(name, value);
     desktop.quitRequested = () => void get().cancel();
-    // SET LIBRARY TO reaches the process that can load a 32-bit .fll; there is none in a browser
-    desktop.libraries = getApi().library;
+    // SET LIBRARY TO reaches the process that can load a 32-bit .fll; there is none in a browser.
+    // A library named without a folder is the program's default directory's, which here is the
+    // project folder - `SET LIBRARY TO codemine.fll` means the one beside the application. Left
+    // alone, that process would resolve it against its own working directory instead.
+    const libraryHost = getApi().library;
+    desktop.libraries = libraryHost && {
+      ...libraryHost,
+      load: (path: string) => libraryHost.load(isAbsolute(path) ? path : useProjectStore.getState().resolvePath(path)),
+    };
     const vm = createVm(desktop);
+    vm.setSetting('RUNTIME', !runtimeUi.development);
     // _SAMPLES names the samples directory, which is HOME(2). A program that opens
     // _samples + "\Data\customer.dbf" reads it on its first line, so it is answered before
     // anything runs rather than while it does.
@@ -408,6 +421,18 @@ export const useSessionStore = create<SessionState>((set, get) => {
     const classLibraries = new ClassLibraries(async (given) => {
       const path = await reach(at(given));
       if (await getApi().files.exists(path).catch(() => false)) return readVfpTable(path);
+      // A class library of the project is found by name wherever in the project it sits, as it
+      // is once the project is built and every file is inside the application: `SET CLASSLIB TO
+      // AppMain` from a program in `source\` names `source\appmain.vcx`. The project lists the
+      // library as what the import made of it; the .vcx it was made from is beside that.
+      const stemOf = (p: string) => basename(p).replace(/\.[^.]*$/, '').toLowerCase();
+      const wanted = stemOf(given);
+      const project = useProjectStore.getState();
+      const item = project.doc?.items.find((i) => i.kind === 'class' && stemOf(i.path) === wanted);
+      if (item) {
+        const vcx = project.resolvePath(item.path).replace(/\.[^./\\]+$/, '.vcx');
+        if (await getApi().files.exists(vcx).catch(() => false)) return readVfpTable(await reach(vcx));
+      }
       // A Foundation Class is named by file alone - `SET CLASSLIB TO _base` - because Visual
       // FoxPro finds those on its own search path. Copies of them ship with FoxDev for exactly
       // that reason, and the folder holding them is the last place looked, as it is when a
@@ -483,6 +508,12 @@ export const useSessionStore = create<SessionState>((set, get) => {
 
     // `oContainer.NewObject(name, class, file)`: a member of a class out of a class library
     desktop.libraryObject = (className, module, into) => libraryObject(className, module, into);
+    // _SCREEN.AddObject makes its object the way CREATEOBJECT does, a program's own classes
+    // included, so it goes the same way a CREATEOBJECT from the VM goes
+    desktop.createNamedObject = (className) =>
+      Promise.resolve(
+        perform({ kind: 'CreateObject', class: className, args: [], definition: programClass(className) }, { fiber: 0, generation: 0 }),
+      );
 
     // an ActiveX control this runtime does not draw is still reachable through COM
     desktop.createOleObject = (progId) => {
@@ -1447,6 +1478,16 @@ export const useSessionStore = create<SessionState>((set, get) => {
       if (module < 0) return [fallback];
       const known = definedClasses(module);
       return known.length > 0 ? known : [fallback];
+    }
+
+    /** A `DEFINE CLASS` of that name in any program loaded so far, with the module holding it. */
+    function programClass(className: string): VfpClassDef | null {
+      const wanted = className.toLowerCase();
+      for (const id of new Set(modules.values())) {
+        const found = definedClasses(id).find((c) => c.name.toLowerCase() === wanted);
+        if (found) return { ...found, module: found.module ?? id };
+      }
+      return null;
     }
 
     /** The `DEFINE CLASS` definitions a module holds, read once and kept. */

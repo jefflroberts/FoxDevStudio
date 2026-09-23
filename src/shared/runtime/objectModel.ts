@@ -1118,6 +1118,12 @@ export interface CreateFormOptions {
  */
 export class Desktop implements HostReads {
   readonly forms: FormInstance[] = [];
+  /**
+   * What a program has written to `_SCREEN` or given it with AddProperty, by upper-cased name.
+   * A CodeMine application's first lines set the caption and add a property to carry its
+   * start-up parameter across a CLEAR ALL, so the screen has to hold what it is told.
+   */
+  private readonly screenValues = new Map<string, VmValue>();
   /** The formsets running: containers of forms, which are not themselves windows on the screen. */
   readonly formSets: FormSetInstance[] = [];
   /** Handle -> object; index 0 is the desktop itself. */
@@ -1335,6 +1341,12 @@ export class Desktop implements HostReads {
    * and `null` when it has one whose Init refused to be created - which are different answers,
    * because only the first of them means the program named something that does not exist.
    */
+  /**
+   * An object of the class of that name, made as `CREATEOBJECT()` would make it: a base class,
+   * a `DEFINE CLASS` of a program already loaded, or a class of a loaded class library. The
+   * session provides it; `_SCREEN.AddObject` is what asks.
+   */
+  createNamedObject: ((className: string) => Promise<VmValue>) | null = null;
   libraryObject:
     | ((
         className: string,
@@ -1700,7 +1712,10 @@ export class Desktop implements HostReads {
 
   getProp(obj: number, name: string): VmValue | undefined {
     if (obj === APP_HANDLE) return this.appProp(name);
-    if (obj === SCREEN_HANDLE) return this.screenProp(name);
+    if (obj === SCREEN_HANDLE) {
+      const own = this.screenValues.get(name.toUpperCase());
+      return own !== undefined ? own : this.screenProp(name);
+    }
     const host = this.hosted.get(obj);
     // a property read happens inside wasm, so it can only be something that is already known
     if (host) return settled(this.fromHost(host.get(name)));
@@ -1828,6 +1843,8 @@ export class Desktop implements HostReads {
       if (name.toUpperCase() === 'APPLICATION') return APP_HANDLE;
       const form = this.findForm(name);
       if (form) return form.handle;
+      const own = this.screenValues.get(name.toUpperCase());
+      if (own !== undefined) return handleOf(own) ?? 'prop';
       return this.screenProp(name) !== undefined ? 'prop' : METHOD_NAMES.has(name.toUpperCase()) ? 'method' : 'none';
     }
     const host = this.hosted.get(obj);
@@ -2044,6 +2061,15 @@ export class Desktop implements HostReads {
    * same error a read would when the property does not exist.
    */
   setProp(obj: number, name: string, value: VmValue): void {
+    // the screen holds what it is told; a name it has never had is 1734, as on any form
+    if (obj === SCREEN_HANDLE) {
+      const upper = name.toUpperCase();
+      if (!this.screenValues.has(upper) && this.screenProp(name) === undefined) {
+        throw new HostError(1734, `Property ${upper} is not found.`);
+      }
+      this.screenValues.set(upper, value);
+      return;
+    }
     const host = this.hosted.get(obj);
     if (host) {
       if (host.member(name) === 'none' && host.get(name) === undefined) {
@@ -2347,7 +2373,9 @@ export class Desktop implements HostReads {
       }
       case 'ADDPROPERTY': {
         const [property, value] = args;
-        if (typeof property !== 'string' || !target) return false;
+        if (typeof property !== 'string') return false;
+        if (obj === SCREEN_HANDLE) return this.addProperty(SCREEN_HANDLE, property, value ?? null);
+        if (!target) return false;
         return this.addProperty(target.handle, property, value ?? null);
       }
       case 'RESETTODEFAULT': {
@@ -2527,6 +2555,7 @@ export class Desktop implements HostReads {
         // program runs can name one. `AddObject("ole1", "olecontrol", "WMPlayer.OCX")` is how
         // the samples reach the Media Player.
         const [name, klass, ole] = args;
+        if (obj === SCREEN_HANDLE) return this.screenAddObject(String(vmToProp(name ?? '') ?? ''), String(vmToProp(klass ?? '') ?? ''));
         if (!target) throw new HostError(1943, 'Member  does not evaluate to an object.');
         return this.addObject(
           target,
@@ -2607,6 +2636,23 @@ export class Desktop implements HostReads {
    * `AddObject(cName, cClass)`: a control created while the form runs. VFP adds it hidden, so
    * the code that follows can position it before it appears.
    */
+  /**
+   * `_SCREEN.AddObject(cName, cClass)`: an object of the class, made as CREATEOBJECT makes one,
+   * held by the screen under that name. A CodeMine application keeps its global object manager
+   * there - `_SCREEN.AddObject('cmGlobalObjectManager', 'cmGlobalObjectManager')`, a class its
+   * procedure file defines - and reaches it as `_SCREEN.cmGlobalObjectManager` from then on.
+   */
+  private async screenAddObject(name: string, className: string): Promise<VmValue> {
+    if (!this.createNamedObject) throw new HostError(1733, `Class definition ${className.toUpperCase()} is not found.`);
+    const made = await this.createNamedObject(className);
+    // an Init that refused leaves the screen without the member, as it leaves a form without one
+    if (made === null || made === false) return false;
+    this.screenValues.set(name.toUpperCase(), made);
+    const handle = handleOf(made);
+    if (handle !== undefined) this.handles[handle]?.set('Name', name.toUpperCase(), 'program');
+    return true;
+  }
+
   private addObject(parent: RuntimeObject, name: string, className: string, oleClass = ''): Promise<VmValue> | VmValue {
     const type = baseClassToControlType(className);
     if (type === null || type === 'Form') throw new HostError(1733, `Class definition ${className.toUpperCase()} is not found.`);
@@ -2790,6 +2836,13 @@ export class Desktop implements HostReads {
    * 31, and the answer is .T. whether or not the object already had the property.
    */
   addProperty(obj: number, name: string, value: VmValue): boolean {
+    if (obj === SCREEN_HANDLE) {
+      // an array property on the screen is kept as its first value, which is all anything
+      // reads of one there
+      const bare = (arraySubscripts(name)?.name ?? name).toUpperCase();
+      this.screenValues.set(bare, value ?? false);
+      return true;
+    }
     const target = this.handles[obj];
     if (!target) return false;
     const sized = arraySubscripts(name);
