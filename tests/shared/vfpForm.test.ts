@@ -760,6 +760,22 @@ describe('importClassLibrary', () => {
     expect(imported.doc.form.children).toHaveLength(1);
   });
 
+  it("works out a class's own property written in parentheses, and keeps an unquoted one as text", () => {
+    // CodeMine's cmApplicationManager: `nhkeymachineroot = ((2^31) + 2)` is HKEY_LOCAL_MACHINE to
+    // every registry call handed it, while `cappname = ShutterDesign` is a string
+    const app = row({
+      PLATFORM: 'WINDOWS',
+      CLASS: 'custom',
+      BASECLASS: 'custom',
+      OBJNAME: 'appmanager',
+      PARENT: '',
+      PROPERTIES: props('nhkeymachineroot = ((2^31) + 2)', 'cappname = ShutterDesign', 'cpair = (a) + (b)', 'Name = "appmanager"'),
+    });
+    const imported = importClassLibrary(table(HEADER_ROW, app), 'apps').find((c) => c.className === 'appmanager')!.imported;
+    expect(imported.doc.meta?.vfp?.expressions).toEqual({ 'appmanager.nhkeymachineroot': '((2^31) + 2)' });
+    expect(imported.doc.form.props['cappname']).toBe('ShutterDesign');
+  });
+
   it('imports a Collection member the way it imports a Custom one', () => {
     const holder = row({
       PLATFORM: 'WINDOWS',

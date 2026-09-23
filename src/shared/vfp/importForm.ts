@@ -1427,6 +1427,11 @@ function applyProperties(
       // is one of the designer's own notes, which describe the file rather than the object
       if (!HOUSEKEEPING.has(entry.name.toLowerCase()) && !entry.name.startsWith('_')) {
         props[entry.name] = entry.value;
+        // A property of the class's own keeps its text unquoted - `cAppName = ShutterDesign` is a
+        // string - so only one written in parentheses is an expression, worked out when the object
+        // is made: CodeMine's `nHkeyMachineRoot = ((2^31) + 2)` is a number to the registry calls
+        // that are handed it, or they read nothing. The text stays until then.
+        if (isParenthesised(entry.raw)) expressions[`${objectPath}.${entry.name}`] = entry.raw.trim();
       }
       reserved[`${objectPath}.${entry.name}`] = entry.raw;
       continue;
@@ -1441,6 +1446,18 @@ function applyProperties(
  * Everything beginning with an underscore is a designer's private note as well.
  */
 const HOUSEKEEPING = new Set(['docreate']);
+
+/** `(expr)`, the whole of it inside one pair of parentheses. */
+function isParenthesised(raw: string): boolean {
+  const t = raw.trim();
+  if (!t.startsWith('(') || !t.endsWith(')')) return false;
+  let depth = 0;
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] === '(') depth++;
+    else if (t[i] === ')' && --depth === 0 && i < t.length - 1) return false;
+  }
+  return depth === 0;
+}
 
 /** VFP writes property names in any case; the registry declares one exact spelling. */
 function declaredPropertyName(descriptor: ObjectDescriptor, name: string): string | undefined {

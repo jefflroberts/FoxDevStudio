@@ -2750,6 +2750,9 @@ impl Vm {
         let stack_len = fb.stack.len();
         let handlers_len = fb.handlers.len();
         let pending_len = fb.pending_rethrow.len();
+        // a fiber asked to evaluate while it waits on the host - CREATEOBJECT() working out a
+        // property written as an expression - still wants its answer pushed when it resumes
+        let waiting = fb.pending.take();
         self.push_inline(fb, id, false);
         let step = self.run(host, fb, floor);
         let r = match step {
@@ -2763,7 +2766,7 @@ impl Vm {
         fb.stack.truncate(stack_len);
         fb.handlers.truncate(handlers_len);
         fb.pending_rethrow.truncate(pending_len);
-        fb.pending = None;
+        fb.pending = waiting;
         r
     }
 
@@ -8989,6 +8992,8 @@ impl Vm {
         let into_alias = run.into_alias.clone();
         let sources: Vec<(usize, Option<u64>)> = run.sources.iter().map(|s| (s.area, s.restore)).collect();
         let (fields, rows) = run.finish(&self.settings)?;
+        // how many rows the query answered with, which is what a program asks straight after it
+        self.globals.insert("_TALLY".into(), Value::number(rows.len() as f64));
 
         // let the sources go before the result lands, so a query INTO CURSOR named after one of
         // them takes its place rather than fighting it for a work area

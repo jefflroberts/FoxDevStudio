@@ -204,3 +204,75 @@ describe('an event called as a method', () => {
     expect(printed()).toEqual(['page .T. .T. .T. .T.', 'form .T. .T. .T.', 'cmd .T. .T. .T. .T.']);
   });
 });
+
+describe('a page', () => {
+  it('answers PageOrder with its place in the pageframe', async () => {
+    // measured; CodeMine's ActivePage_Assign sets ActivePage from a page's PageOrder
+    await useSessionStore.getState().execute(
+      source,
+      [
+        'LOCAL o',
+        'o = CREATEOBJECT("fx")',
+        '? "order", o.pf.Pages(1).PageOrder, o.pf.Pages(2).PageOrder, o.pf.Pages(3).PageOrder',
+        '? "active", o.pf.ActivePage',
+        'o.pf.ActivePage = o.pf.Pages(2).PageOrder',
+        '? "after", o.pf.ActivePage',
+        'DEFINE CLASS fx AS Form',
+        '  ADD OBJECT pf AS PageFrame WITH PageCount = 3',
+        'ENDDEFINE',
+      ].join('\n'),
+    );
+    expect(printed()).toEqual(['order 1 2 3', 'active 1', 'after 2']);
+  });
+});
+
+describe('a class property written as an expression', () => {
+  it('is worked out when the object is made, where CREATEOBJECT() was called', async () => {
+    // measured in Visual FoxPro 9; Shutter Ace's QuickBooksInvoice.TxnDate is the real case
+    await useSessionStore.getState().execute(
+      source,
+      [
+        'o = CREATEOBJECT("cx")',
+        '? "a", o.cDate == TRANSFORM(DTOS(DATE()),"@R xxxx-xx-xx"), o.nSum, VARTYPE(o.dWhen), o.dWhen == DATE(), o.cUp',
+        'o3 = CREATEOBJECT("cchild")',
+        '? "c", o3.nSum, o3.cDate == o.cDate',
+        'nBase = 7',
+        'o4 = CREATEOBJECT("cvar")',
+        '? "d", VARTYPE(o4), o4.nFromVar',
+        'DEFINE CLASS cx AS Custom',
+        '  cDate = TRANSFORM(DTOS(DATE()),"@R xxxx-xx-xx")',
+        '  nSum = 2 + 3',
+        '  dWhen = DATE()',
+        '  cUp = UPPER("abc")',
+        'ENDDEFINE',
+        'DEFINE CLASS cchild AS cx',
+        '  nSum = 10 * 2',
+        'ENDDEFINE',
+        'DEFINE CLASS cvar AS Custom',
+        '  nFromVar = nBase + 1',
+        'ENDDEFINE',
+      ].join('\n'),
+    );
+    expect(printed()).toEqual(['a .T. 5 D .T. ABC', 'c 20 .T.', 'd O 8']);
+  });
+});
+
+describe('_VFP', () => {
+  it('takes what a program writes on it, and refuses a name it does not have', async () => {
+    // measured: CodeMine's RestoreSizeAndPosition writes the main window's size this way
+    await useSessionStore.getState().execute(
+      source,
+      [
+        '_VFP.Height = 500',
+        '_VFP.Width = 700',
+        '? "after", _VFP.Height, _VFP.Width',
+        'TRY',
+        '  _VFP.Foo = 1',
+        'CATCH TO e',
+        '  ? "unknown", e.ErrorNo',
+        'ENDTRY',
+      ].join('\n'),
+    );
+    expect(printed()).toEqual(['after 500 700', 'unknown 1426']);
+  });
+});

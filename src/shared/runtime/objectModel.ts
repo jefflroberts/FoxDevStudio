@@ -33,6 +33,8 @@ import type { LibraryHost, LibraryValue } from './libraryHost';
  * empty parameter.
  */
 function toLibraryValue(v: VmValue): LibraryValue {
+  // `@cValue`: the library is handed the variable, and what it stores comes back to it
+  if (typeof v === 'object' && v !== null && '$ref' in v) return { kind: 'ref', value: toLibraryValue(v.$val) };
   if (typeof v === 'string') return { kind: 'string', text: v };
   if (typeof v === 'number') return { kind: 'number', num: v };
   if (typeof v === 'boolean') return { kind: 'logical', flag: v };
@@ -1154,8 +1156,13 @@ export class Desktop implements HostReads {
    * application answers to falls through to what `_VFP` was measured holding, so a property this
    * switch has never heard of still answers rather than being missing.
    */
+  /** What a program wrote on `_VFP`: `_VFP.Height = 500` reads back as 500. */
+  private appValues = new Map<string, VmValue>();
+
   private appProp(name: string): VmValue | undefined {
     const measured = BASE_CLASS_MEMBERS['Application'];
+    const written = this.appValues.get(name.toUpperCase());
+    if (written !== undefined) return written;
     switch (name.toUpperCase()) {
       // `_VFP` in the product has no Class and no BaseClass at all - asking raises - but a great
       // deal of code asks any object what it is, and answering is kinder than raising
@@ -1805,6 +1812,15 @@ export class Desktop implements HostReads {
         return target.parentClass;
       case 'CONTROLCOUNT':
         return target.children.length;
+      // a page's place among its pageframe's pages, counting from 1, unless a program moved it;
+      // CodeMine's ActivePage_Assign turns a page number into its PageOrder this way
+      case 'PAGEORDER': {
+        if (target.baseClass !== 'Page') break;
+        const set = target.get('PageOrder');
+        if (typeof set === 'number' && set > 0) return set;
+        const pages = target.parent?.children.filter((c) => c.baseClass === 'Page') ?? [];
+        return pages.indexOf(target) + 1;
+      }
       case 'LISTCOUNT':
         return target.isListControl ? target.items.length : undefined;
       case 'LISTINDEX':
@@ -2078,7 +2094,7 @@ export class Desktop implements HostReads {
     library: number,
     fn: number,
     args: VmValue[],
-  ): { ok: true; value: VmValue } | { ok: false; code: number; message: string } {
+  ): { ok: true; value: VmValue; refs: { index: number; value: VmValue }[] } | { ok: false; code: number; message: string } {
     if (!this.libraries) return { ok: false, code: 1726, message: 'API library is not found.' };
     let answer;
     try {
@@ -2090,7 +2106,11 @@ export class Desktop implements HostReads {
     // _Error(n) raises the product's error n; _UserError(text) is 1098, in the library's words
     if (answer.error > 0) return { ok: false, code: answer.error, message: '' };
     if (answer.error < 0) return { ok: false, code: 1098, message: answer.errorText };
-    return { ok: true, value: fromLibraryValue(answer.value) };
+    return {
+      ok: true,
+      value: fromLibraryValue(answer.value),
+      refs: (answer.refs ?? []).map((r) => ({ index: r.index, value: fromLibraryValue(r.value) })),
+    };
   }
 
   unloadLibrary(library: number): void {
@@ -2129,6 +2149,16 @@ export class Desktop implements HostReads {
    * same error a read would when the property does not exist.
    */
   setProp(obj: number, name: string, value: VmValue): void {
+    // `_VFP` too - CodeMine puts the main window back where it was with `_VFP.Height = ...` -
+    // and a name it does not have is the automation error the product raises (measured)
+    if (obj === APP_HANDLE) {
+      const upper = name.toUpperCase();
+      if (!this.appValues.has(upper) && this.appProp(name) === undefined) {
+        throw new HostError(1426, 'OLE error code 0x80020006: Unknown name.');
+      }
+      this.appValues.set(upper, value);
+      return;
+    }
     // the screen holds what it is told; a name it has never had is 1734, as on any form
     if (obj === SCREEN_HANDLE) {
       const upper = name.toUpperCase();
