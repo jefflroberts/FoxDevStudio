@@ -4,6 +4,42 @@ Last updated 2026-09-24 (second session). This file, `handoff-tools/` and
 `tests/zz-avbco-run.scratch.test.ts` are committed on `avbco-integration` only (the user committed
 them in `12ea0c6`). Keep them out of every topic branch and pull request.
 
+## Resuming (do this first)
+
+1. Read this file through.
+2. `git checkout avbco-integration` and confirm HEAD is the handoff commit on top of `8dbf473`.
+3. `gh pr list -R FoxDevCommunity/FoxDevStudio --state all` and check each PR's reviews and inline
+   comments (`gh api repos/FoxDevCommunity/FoxDevStudio/pulls/<n>/reviews` and `/comments`). Report
+   merges and comments; do not reply without asking.
+4. Rebuild before running anything: `npm run build:wasm` (the generated wasm is not committed).
+5. Ask the user about the pending PR split below before cutting or opening anything.
+6. Then carry on from "Where the run stands".
+
+## Pending decision: splitting the `ecf424b..8dbf473` batch
+
+Proposed to the user at the end of the second session; no answer yet. Nothing has been cut, pushed
+or opened. Topic branches off `main`:
+
+| Branch | Holds | Stacks on |
+|---|---|---|
+| `evaluate-inline` | EVALUATE as an inline frame; carrying on after an error in a macro, EVALUATE or ON ERROR handler (`rest_after_error`) | `main` |
+| `method-errors` | Errors reaching a TRY in the caller (`caller`/`passing`, `PassedError`, `Vm::step` keeping the fiber), the 103 limit, Exception.Procedure / Error cMethod spelling, host read errors (`$hostError`), PROGRAM()/LINENO() inside ON ERROR | #6, then `evaluate-inline` |
+| `library-objects` | DODEFAULT via `codeOwner()`, AddObject of library classes, Load only for visual objects, Empty/SCATTER NAME, array functions filling a property (compiler write-back, `assignArray`), property expressions (`headerDefines.ts`, NULL, THIS, quiet TRY); the regenerated `fdvclasses.vcx` with `fdvkid` | #6 |
+| `data-commands` | SKIP IN expr, SET RELATION forms, CURSORGETPROP SourceType/Database (+ backlink), GETFLDSTATE, empty-table index, FULLPATH/OPEN DATABASE on SET PATH, `data\` paths, project-folder FileOp paths, memory API growth + 2091 guard, MEMOWIDTH, SET CENTURY | `main` |
+| `names-at-run-time` | VARTYPE (`NameDefined`), macro before a subscript, macro standing for arguments, MLINE/`_MLINE`, SYS(16, n) | `main` |
+
+Notes for the split:
+- `vm.rs`, `session.ts`, `compiler.rs` and `parser.rs` carry hunks for several topics; assign by
+  hunk with `hunks.py`, and expect to hand-edit a few mixed hunks.
+- The TS tests added to `tests/runtime/defineClass.test.ts` belong to different topics; split them
+  with their code.
+- Some old tests were changed on purpose to match measurements: `builtins_system.rs` (EVALUATE
+  contract, SYS(16) `.FXP`), `macros.rs` (SYS(16) shape), `defineClass.test.ts` (Error cMethod
+  `proc2`). They go with the topic that changed the behavior.
+- Build and run the full Rust and TS suites in each worktree, plus `tests/reference` and
+  `npm run argforms:check`, before opening a PR. PR bodies end with the Claude Code line.
+- After the split, the next split point becomes `8dbf473` (or the handoff commit after it).
+
 ## Goal
 
 Make `C:\avbcodev\avbco.pjx` (Shutter Ace / ShutterDesign II, a 60k-line Visual FoxPro app built on
@@ -116,6 +152,10 @@ R=<report file>; AVBCO_REPORT="$R" AVBCO_MAX_ERRORS=10 npx vitest run tests/zz-a
 - Output lines contain CR from `CHR(13)`; pipe through `tr '\r' '|'`.
 - "recursive use of an object ... unsafe aliasing" means an earlier wasm call trapped; find the
   first failure.
+- `tests/zz-eval.scratch.test.ts` (untracked, never commit) runs small programs through the real
+  session and prints their output: edit its `cases` object. Handy for checking FoxDev against a
+  VFP probe. Note that it installs `__avbcoStep` only if the scheduler still calls that hook,
+  which it no longer does.
 - `python handoff-tools/find_app.py <class> [method]` prints CodeMine source from the imported
   `.fxc` JSON, whole methods now (`FIND_APP_LINES` caps it).
 - The CodeMine `.fxc` files are stale (written before the importer kept ancestor copies). The
