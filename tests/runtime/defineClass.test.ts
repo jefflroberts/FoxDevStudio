@@ -361,7 +361,7 @@ describe('DEFINE CLASS', () => {
     const printed = useSessionStore.getState().output.filter((o) => o.kind === 'output').map((o) => o.text);
     // VFP resumes the failing method at its next statement, as it does after ON ERROR
     expect(printed).toEqual([
-      'Error method: 12 in MYCLASS.PROC2',
+      'Error method: 12 in proc2',
       'Proc2 carries on after the Error method',
       'back in Proc1',
       'still running',
@@ -575,5 +575,255 @@ describe('DEFINE CLASS', () => {
       '11 .T.',
     ]);
     expect(useSessionStore.getState().output.filter((o) => o.kind === 'error')).toEqual([]);
+  });
+  // After an error has been caught, Visual FoxPro puts more than one space between the items
+  // of a `?` list, in a way not yet worked out; these two compare with runs of spaces closed up.
+  const printedWords = () =>
+    useSessionStore.getState().output.filter((o) => o.kind === 'output').map((o) => o.text.trim().replace(/ +/g, ' '));
+
+  it('runs a method called from EVALUATE(), as Visual FoxPro 9 measured it', async () => {
+    // CodeMine's cmEvent.Subscribe calls its subscriber this way. Every expected line was
+    // printed by vfp9.exe running this same program.
+    await useSessionStore.getState().execute(
+      source,
+      [
+        "LOCAL oPub, oSub, x",
+        "oPub = CREATEOBJECT(\"Publisher\")",
+        "oSub = CREATEOBJECT(\"Subscriber\")",
+        "oPub.Subscribe(oSub, \"Receive\")",
+        "? oSub.cGot",
+        "x = EVALUATE(\"oSub.Twice(21)\")",
+        "? x",
+        "? EVALUATE(\"oSub.Twice(oSub.Twice(2)) + 1\")",
+        "EVALUATE(\"oSub.Receive('as a statement', 9)\")",
+        "? oSub.cGot",
+        "? EVAL(\"oSub.Twice(5)\")",
+        "TRY",
+        "  EVALUATE(\"oSub.Fails()\")",
+        "CATCH TO oErr",
+        "  ? \"caught\", TRANSFORM(oErr.ErrorNo), oErr.Procedure",
+        "ENDTRY",
+        "? \"after\"",
+        "",
+        "DEFINE CLASS Publisher AS Custom",
+        "  uValue1 = \"first\"",
+        "  uValue2 = 42",
+        "  nParamCount = 2",
+        "  PROCEDURE Subscribe(oSubscriber, cMethod)",
+        "    LOCAL ix, cParams",
+        "    cParams = ''",
+        "    FOR ix = 1 TO THIS.nParamCount",
+        "      cParams = cParams + ', THIS.uValue' + STR(ix, 1)",
+        "    ENDFOR",
+        "    EVALUATE('m.oSubscriber.' + m.cMethod + '(' + SUBSTR(m.cParams, 3) + ')')",
+        "  ENDPROC",
+        "ENDDEFINE",
+        "",
+        "DEFINE CLASS Subscriber AS Custom",
+        "  cGot = \"\"",
+        "  PROCEDURE Receive(a, b)",
+        "    THIS.cGot = a + \" \" + TRANSFORM(b)",
+        "  ENDPROC",
+        "  FUNCTION Twice(n)",
+        "    RETURN n * 2",
+        "  ENDFUNC",
+        "  PROCEDURE Fails",
+        "    x = 1 + \"a\"",
+        "  ENDPROC",
+        "ENDDEFINE",
+      ].join('\n'),
+    );
+    expect(printedWords()).toEqual(['first 42', '42', '9', 'as a statement 9', '10', 'caught 107 fails', 'after']);
+    expect(useSessionStore.getState().output.filter((o) => o.kind === 'error' && !o.text.includes('handled by the program'))).toEqual([]);
+  });
+
+  it('catches an error inside a called method with a TRY in the caller, as Visual FoxPro 9 measured it', async () => {
+    // The method runs as a fiber of its own here; in Visual FoxPro it is one stack, so a TRY
+    // in the caller catches what nothing in the method handles. It is nearer than ON ERROR,
+    // the object's own Error method is nearer still, and the rest of the method does not run.
+    await useSessionStore.getState().execute(
+      source,
+      [
+        "LOCAL o, p",
+        "o = CREATEOBJECT(\"Plain\")",
+        "p = CREATEOBJECT(\"WithError\")",
+        "TRY",
+        "  o.Fails()",
+        "  ? \"1 not caught\"",
+        "CATCH TO oErr",
+        "  ? \"1 caught\", TRANSFORM(oErr.ErrorNo), oErr.Procedure, TRANSFORM(oErr.LineNo)",
+        "ENDTRY",
+        "ON ERROR ? \"2 on error\", TRANSFORM(ERROR())",
+        "TRY",
+        "  o.Fails()",
+        "  ? \"2 after call\"",
+        "CATCH TO oErr",
+        "  ? \"2 caught\", TRANSFORM(oErr.ErrorNo)",
+        "ENDTRY",
+        "ON ERROR",
+        "TRY",
+        "  p.Fails()",
+        "  ? \"3 after call\"",
+        "CATCH TO oErr",
+        "  ? \"3 caught\", TRANSFORM(oErr.ErrorNo)",
+        "ENDTRY",
+        "TRY",
+        "  o.Outer()",
+        "  ? \"4 not caught\"",
+        "CATCH TO oErr",
+        "  ? \"4 caught\", TRANSFORM(oErr.ErrorNo), oErr.Procedure",
+        "ENDTRY",
+        "? \"5\", o.cLog",
+        "TRY",
+        "  o.Throws()",
+        "CATCH TO oErr",
+        "  ? \"6 caught\", TRANSFORM(oErr.ErrorNo), TRANSFORM(oErr.UserValue)",
+        "ENDTRY",
+        "? \"end\"",
+        "",
+        "DEFINE CLASS Plain AS Custom",
+        "  cLog = \"\"",
+        "  PROCEDURE Fails",
+        "    x = 1 + \"a\"",
+        "    THIS.cLog = THIS.cLog + \"ran on;\"",
+        "  ENDPROC",
+        "  PROCEDURE Outer",
+        "    THIS.Fails()",
+        "    THIS.cLog = THIS.cLog + \"outer on;\"",
+        "  ENDPROC",
+        "  PROCEDURE Throws",
+        "    THROW \"boom\"",
+        "  ENDPROC",
+        "ENDDEFINE",
+        "",
+        "DEFINE CLASS WithError AS Custom",
+        "  PROCEDURE Fails",
+        "    x = 1 + \"a\"",
+        "  ENDPROC",
+        "  PROCEDURE Error(nError, cMethod, nLine)",
+        "    ? \"3 error method\", TRANSFORM(nError), cMethod, TRANSFORM(nLine)",
+        "  ENDPROC",
+        "ENDDEFINE",
+      ].join('\n'),
+    );
+    expect(printedWords()).toEqual([
+      '1 caught 107 fails 41',
+      '2 caught 107',
+      '3 error method 107 fails 55',
+      '3 after call',
+      '4 caught 107 fails',
+      '5',
+      '6 caught 2071 boom',
+      'end',
+    ]);
+  });
+
+  it('stops a method calling itself at the deepest level, as Visual FoxPro 9 measured it', async () => {
+    // Measured from a main program at level 2: a method calling itself made 124 calls before the
+    // next raised 103, one fewer than a function makes. From a main program at level 1 that is
+    // 125. Each call is a fiber of its own here, so this is also what keeps a program that
+    // recurses without end from running the JavaScript stack out.
+    await useSessionStore.getState().execute(
+      source,
+      [
+        'PUBLIC gnDepth',
+        'gnDepth = 0',
+        'o = CREATEOBJECT("Deep")',
+        'TRY',
+        '  o.Recurse()',
+        'CATCH TO oErr',
+        '  ? "caught", TRANSFORM(oErr.ErrorNo), TRANSFORM(gnDepth)',
+        'ENDTRY',
+        'DEFINE CLASS Deep AS Custom',
+        '  PROCEDURE Recurse',
+        '    gnDepth = gnDepth + 1',
+        '    THIS.Recurse()',
+        '  ENDPROC',
+        'ENDDEFINE',
+      ].join('\n'),
+    );
+    expect(printedWords()).toEqual(['caught 103 125']);
+  });
+
+  it('fills an Empty object with SCATTER NAME, into a property through WITH too, as Visual FoxPro 9 measured it', async () => {
+    // CodeMine keeps a record's original values this way: SCATTER MEMO NAME .oOldVal
+    await useSessionStore.getState().execute(
+      source,
+      [
+        "CREATE CURSOR cc (keyname C(10), n N(3))",
+        "INSERT INTO cc VALUES (\"abc\", 5)",
+        "o = CREATEOBJECT(\"Holder\")",
+        "e = CREATEOBJECT(\"Empty\")",
+        "? \"empty\", VARTYPE(e)",
+        "SCATTER MEMO NAME oPlain",
+        "? \"plain\", oPlain.keyname, oPlain.n",
+        "o.Fill()",
+        "? \"with\", VARTYPE(o.oOldVal), o.oOldVal.keyname",
+        "DEFINE CLASS Holder AS Custom",
+        "  oOldVal = .NULL.",
+        "  PROCEDURE Fill",
+        "    WITH THIS",
+        "      SCATTER MEMO NAME .oOldVal",
+        "    ENDWITH",
+        "  ENDPROC",
+        "ENDDEFINE",
+      ].join('\n'),
+    );
+    const printed = useSessionStore.getState().output.filter((o) => o.kind === 'output').map((o) => o.text.trimEnd());
+    expect(printed).toEqual(['empty O', 'plain abc                 5', 'with O abc']);
+  });
+
+  it('runs Load for a form and not for a Custom or a Session, as Visual FoxPro 9 measured it', async () => {
+    await useSessionStore.getState().execute(
+      source,
+      [
+        'PUBLIC gcLog',
+        'gcLog = ""',
+        'o = CREATEOBJECT("CustomWithLoad")',
+        's = CREATEOBJECT("SessionWithLoad")',
+        'f = CREATEOBJECT("FormWithLoad")',
+        '? "log", gcLog',
+        'DEFINE CLASS CustomWithLoad AS Custom',
+        '  PROCEDURE Load',
+        '    gcLog = gcLog + "custom-load;"',
+        '  ENDPROC',
+        '  PROCEDURE Init',
+        '    gcLog = gcLog + "custom-init;"',
+        '  ENDPROC',
+        'ENDDEFINE',
+        'DEFINE CLASS SessionWithLoad AS Session',
+        '  PROCEDURE Load',
+        '    gcLog = gcLog + "session-load;"',
+        '  ENDPROC',
+        'ENDDEFINE',
+        'DEFINE CLASS FormWithLoad AS Form',
+        '  PROCEDURE Load',
+        '    gcLog = gcLog + "form-load;"',
+        '  ENDPROC',
+        'ENDDEFINE',
+      ].join('\n'),
+    );
+    expect(printedWords()).toEqual(['log custom-init;form-load;']);
+  });
+
+  it('lets a function fill an array property it is handed, as Visual FoxPro 9 measured it', async () => {
+    // CodeMine's error dialog does AERROR(THISFORM.aErrInfo)
+    await useSessionStore.getState().execute(
+      source,
+      [
+        "o = CREATEOBJECT(\"Holder\")",
+        "TRY",
+        "  x = 1 + \"a\"",
+        "CATCH",
+        "ENDTRY",
+        "n = AERROR(o.aErrInfo)",
+        "cSaid = TRANSFORM(n) + \" \" + VARTYPE(o.aErrInfo[1]) + \" \" + TRANSFORM(o.aErrInfo[1]) + \" \" + TRANSFORM(ALEN(o.aErrInfo, 1)) + \" \" + TRANSFORM(ALEN(o.aErrInfo, 2))",
+        "? \"aerror \" + cSaid",
+        "DEFINE CLASS Holder AS Custom",
+        "  DIMENSION aErrInfo[1]",
+        "ENDDEFINE",
+      ].join('\n'),
+    );
+    expect(printedWords()).toEqual(['aerror 1 N 107 1 7']);
   });
 });

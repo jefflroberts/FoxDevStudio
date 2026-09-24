@@ -1,0 +1,16 @@
+skip 2 CURB
+back 1
+bottom 3
+vartype U U O O
+there N
+dim 3
+acopy a c
+element aList
+rel K found
+off [] KID
+again K KID
+sourcetype 3 3
+database [] []
+dbc fdvdb.dbc data
+memowidth 2048
+too narrow 46 2048

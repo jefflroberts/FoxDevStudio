@@ -389,8 +389,20 @@ export function createMemoryApi(seed: Record<string, string> = {}): MemoryApi {
         return next;
       },
       async write(handle: number, offset: number, text: string) {
-        const bytes = openTables[handle - 1];
-        if (bytes) for (let i = 0; i < text.length; i++) bytes[offset + i] = text.charCodeAt(i) & 0xff;
+        let bytes = openTables[handle - 1];
+        if (!bytes) return;
+        // a record appended past the end grows the table, as writing past the end of a file does;
+        // a typed array would drop those bytes and leave a header counting a record that is not there
+        if (offset + text.length > bytes.length) {
+          const grown = new Uint8Array(offset + text.length);
+          grown.set(bytes);
+          for (const [name, held] of api.binary$) if (held === bytes) api.binary$.set(name, grown);
+          openTables.forEach((open, i) => {
+            if (open === bytes) openTables[i] = grown;
+          });
+          bytes = grown;
+        }
+        for (let i = 0; i < text.length; i++) bytes[offset + i] = text.charCodeAt(i) & 0xff;
       },
       async readIndex(handle: number) {
         const bytes = api.binary$.get(openIndexes[handle - 1] ?? '');

@@ -7,7 +7,7 @@
  */
 
 import type { XmlShape } from '@shared/runtime/xmlAdapter';
-import type { CompileOutput, DebugFrame, DebugVariable, StackEntry, StepMode, StepResult, VmLike } from '@shared/runtime/host';
+import { HostError, type CompileOutput, type DebugFrame, type DebugVariable, type StackEntry, type StepMode, type StepResult, type VmLike } from '@shared/runtime/host';
 import type { VfpClassDef } from '@shared/runtime/classDef';
 import type { VmValue } from '@shared/runtime/values';
 import { headerStem } from '@shared/runtime/programSource';
@@ -96,6 +96,12 @@ class WasmVm implements VmLike {
   abortAll(): void {
     this.guard('abortAll', () => this.vm.abort_all());
   }
+  setCaller(fiber: number, caller: number): void {
+    this.guard('setCaller', () => this.vm.set_caller(fiber, caller));
+  }
+  passError(fiber: number): number | null {
+    return this.guard('passError', () => this.vm.pass_error(fiber) ?? null);
+  }
   callStack(fiber: number): StackEntry[] {
     return this.guard('callStack', () => this.vm.call_stack(fiber) as StackEntry[]);
   }
@@ -161,6 +167,9 @@ export type { WasmVm };
  * mistake in a host read should cost that read, not the runtime, so each returns undefined
  * instead - which every one of them already treats as "no answer".
  */
+/** The reads whose answer can be an error for the VM to raise. */
+const ERROR_ANSWERING_READS = new Set(['getProp', 'getMember']);
+
 function safeReads(reads: unknown, fault: ReadFault): unknown {
   const source = reads as Record<string, unknown>;
   return new Proxy(source, {
@@ -171,6 +180,12 @@ function safeReads(reads: unknown, fault: ReadFault): unknown {
         try {
           return (value as (...a: unknown[]) => unknown).apply(target, args);
         } catch (error) {
+          // Reading a member can fail the way the language says it does - `o.Parent` of an object
+          // nothing contains is error 1924 - and the VM raises that where the read was, as it
+          // would any other error, when the answer says so rather than throwing.
+          if (error instanceof HostError && ERROR_ANSWERING_READS.has(String(key))) {
+            return { $hostError: error.code, message: error.message };
+          }
           // the read answers "nothing" and the reason is raised the moment wasm is off the stack
           fault.error ??= error;
           return undefined;

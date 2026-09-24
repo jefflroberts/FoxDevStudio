@@ -66,6 +66,18 @@ interface QueuedEvent {
   fail(err: unknown): void;
 }
 
+/**
+ * Unwinds the JS stack from a method's fiber back to the fiber that called it, whose TRY is to
+ * catch the method's error. The VM has already raised the error in `caller`; the drive loop
+ * of `caller` only has to carry on.
+ */
+class PassedError extends Error {
+  constructor(readonly caller: number) {
+    super('Error passed to the calling program');
+    this.name = 'PassedError';
+  }
+}
+
 /** Ends a fiber's drive loop when the session is cancelled. */
 class Cancelled extends Error {
   constructor() {
@@ -88,6 +100,8 @@ export class Scheduler {
   private stopped = new Map<number, { stop: BreakStop; release(): void }>();
   /** Host events that arrived while a fiber was on the JS stack, oldest first. */
   private eventQueue: QueuedEvent[] = [];
+  /** Fibers whose host request is being performed, innermost last: a fiber started now runs for the last. */
+  private performing: number[] = [];
 
   constructor(
     private readonly vm: VmLike,
@@ -179,6 +193,10 @@ export class Scheduler {
       }
 
       if (step.state === 'error') {
+        if (step.passes) {
+          const caller = this.vm.passError?.(fiber);
+          if (caller !== undefined && caller !== null) throw new PassedError(caller);
+        }
         const handled = this.handleError(fiber, generation, step.error, step.stack);
         if (handled instanceof Promise) return handled;
         continue;
@@ -210,11 +228,14 @@ export class Scheduler {
       }
 
       let answer: VmValue | Promise<VmValue>;
+      this.performing.push(fiber);
       try {
         answer = this.handler.perform(request, { fiber, generation });
       } catch (err) {
         this.injectError(fiber, err);
         continue;
+      } finally {
+        this.performing.pop();
       }
 
       if (answer instanceof Promise) {
@@ -321,6 +342,8 @@ export class Scheduler {
   }
 
   private injectError(fiber: number, err: unknown): void {
+    // the VM raised it in this fiber already, as the error it was
+    if (err instanceof PassedError && err.caller === fiber) return;
     if (err instanceof HostError) {
       this.vm.resumeError(fiber, err.code, err.message);
     } else {
@@ -404,18 +427,25 @@ export class Scheduler {
   /** Starts a form/control event handler. `null` when the object has no code for it. */
   dispatch(module: number, objPath: string, event: string, thisHandle: number, args: VmValue[] = []): EventOutcome | Promise<EventOutcome> | null {
     const fiber = this.vm.startMethod(module, objPath, event, thisHandle, args);
-    return fiber === null ? null : this.drive(fiber);
+    return fiber === null ? null : this.drive(this.called(fiber));
+  }
+
+  /** Tells the VM which fiber a method started during a host request runs for. */
+  private called(fiber: number): number {
+    const caller = this.performing.at(-1);
+    if (caller !== undefined) this.vm.setCaller?.(fiber, caller);
+    return fiber;
   }
 
   /** The same, for an object created from a `DEFINE CLASS` definition. */
   dispatchClass(module: number, className: string, objPath: string, event: string, thisHandle: number, args: VmValue[] = []): EventOutcome | Promise<EventOutcome> | null {
     const fiber = this.vm.startClassMethod(module, className, objPath, event, thisHandle, args);
-    return fiber === null ? null : this.drive(fiber);
+    return fiber === null ? null : this.drive(this.called(fiber));
   }
 
-  /** Runs a program module's main body. */
-  runProgram(module: number, funcName = 'MAIN', args: VmValue[] = []): EventOutcome | Promise<EventOutcome> {
-    return this.drive(this.vm.start(module, funcName, null, args));
+  /** Runs a program module's main body; `thisHandle` is what THIS means in it, when anything. */
+  runProgram(module: number, funcName = 'MAIN', args: VmValue[] = [], thisHandle: number | null = null): EventOutcome | Promise<EventOutcome> {
+    return this.drive(this.vm.start(module, funcName, thisHandle, args));
   }
 
   /** Aborts every fiber; parked promises see the new generation and stop. */

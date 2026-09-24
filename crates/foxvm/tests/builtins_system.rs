@@ -190,8 +190,17 @@ fn type_and_evaluate() {
     assert_eq!(text("TYPE", vec![s("lOk")]), "L");
     assert_eq!(text("TYPE", vec![s("oNull")]), "X");
     assert_eq!(text("TYPE", vec![s("nowhere")]), "U");
-    assert_eq!(value("EVALUATE", vec![s("1+1")]), Value::number(2.0));
-    assert_eq!(err("EVALUATE", vec![s("nowhere")]).code, RtError::VARIABLE_NOT_FOUND);
+}
+
+#[test]
+fn evaluate_hands_the_vm_the_text_to_run() {
+    // like EXECSCRIPT(), the function cannot run FoxPro itself: the expression may call a method
+    // that stops for the host, so the VM runs it in the calling frame
+    match call("EVALUATE", vec![s("oSub.Twice(21)")]) {
+        Ok(BuiltinResult::Evaluate { expr }) => assert_eq!(expr, "oSub.Twice(21)"),
+        _ => panic!("EVALUATE() did not ask for the expression to be run"),
+    }
+    assert_eq!(err("EVALUATE", vec![n(5.0)]).code, RtError::FUNCTION_ARG_INVALID);
 }
 
 #[test]
@@ -286,7 +295,8 @@ fn sys_returns_unique_and_empty_answers() {
     let f = text("SYS", vec![n(3.0)]);
     assert_eq!(f.len(), 8);
     assert_ne!(f, text("SYS", vec![n(3.0)]));
-    assert_eq!(text("SYS", vec![n(16.0)]), "TESTPRG");
+    // measured: the main program answers with its file (the folder is not known here)
+    assert_eq!(text("SYS", vec![n(16.0)]), "TESTPRG.FXP");
     assert_eq!(text("SYS", vec![n(5.0)]), "");
     assert_eq!(text("SYS", vec![n(2003.0)]), "");
     assert_eq!(text("SYS", vec![n(1037.0)]), "");
@@ -334,7 +344,6 @@ fn execscript_hands_the_vm_the_text_to_run() {
 fn evaluate_reaches_the_context() {
     let mut ctx = TestCtx::default();
     ctx.evals.insert("custom".to_string(), Value::str("hi"));
-    assert_eq!(value_on(&mut ctx, "EVALUATE", vec![s("custom")]), Value::str("hi"));
     assert!(matches!(call_on(&mut ctx, "TYPE", vec![s("custom")]), Ok(BuiltinResult::Value(Value::Str(_)))));
     assert!(matches!(call("EMPTY", vec![Value::Null]), Ok(BuiltinResult::Value(Value::Logical(true)))));
 }

@@ -53,6 +53,12 @@ DO fdvClass WITH "fdvbutton", "commandbutton", "commandbutton", "", 1, ;
   'PROCEDURE Click' + gcNL + 'THIS.Caption = "clicked"' + gcNL + 'ENDPROC' + gcNL, ;
   "ctag" + gcNL
 
+* fdvkid: a class of this library whose Init hands on to its parent's with DODEFAULT()
+DO fdvClass WITH "fdvkid", "fdvgreeter", "custom", "fdvclasses.vcx", 1, ;
+  'nCount = 7' + gcNL + 'Name = "fdvkid"' + gcNL, ;
+  'PROCEDURE Init' + gcNL + 'THIS.nCount = THIS.nCount + 1' + gcNL + 'RETURN DODEFAULT()' + gcNL + 'ENDPROC' + gcNL, ;
+  ""
+
 USE
 RENAME fdvclasses.dbf TO fdvclasses.vcx
 RENAME fdvclasses.fpt TO fdvclasses.vct
@@ -69,6 +75,11 @@ o = CREATEOBJECT("fdvpanel")
 lcOut = lcOut + "panel: controls=" + TRANSFORM(o.ControlCount) + " button=[" + o.cmdgo.Caption + "] panel=" + o.cPanel + gcNL
 o = CREATEOBJECT("fdvbutton")
 lcOut = lcOut + "button: [" + o.Caption + "] tag=[" + o.cTag + "] base=" + o.BaseClass + gcNL
+o = CREATEOBJECT("fdvkid")
+lcOut = lcOut + "kid: " + o.Greet() + gcNL
+o = CREATEOBJECT("Custom")
+o.NewObject("kid", "fdvkid")
+lcOut = lcOut + "kid inside: " + o.kid.Greet() + gcNL
 SET CLASSLIB TO
 STRTOFILE(lcOut, "out.txt")
 

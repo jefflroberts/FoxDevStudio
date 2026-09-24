@@ -50,6 +50,9 @@ pub struct DbfHeader {
     /// `(offset, width)` of the hidden `_NullFlags` field, when the table has one. It is not in
     /// `fields`, so nothing outside this module has to know it is there.
     pub null_flags: Option<(usize, usize)>,
+    /// The database the table belongs to, as the backlink after the field descriptors names it:
+    /// empty for a free table. `CURSORGETPROP("Database")` is this.
+    pub backlink: String,
 }
 
 impl DbfHeader {
@@ -139,6 +142,15 @@ pub fn read_header(dbf: &[u8]) -> Result<DbfHeader, DbfError> {
     }
 
     let all = read_fields(dbf, header_len, codepage)?;
+    // the backlink is the 263 bytes after the terminator of the field descriptors
+    let after = FIELD_ARRAY_START + all.len() * FIELD_DESC_LEN + 1;
+    let backlink = dbf
+        .get(after..header_len.min(after + 263))
+        .map(|bytes| {
+            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+            encoding::decode(&bytes[..end], codepage).trim().to_string()
+        })
+        .unwrap_or_default();
     let full = layout(&all, record_len)?;
     // the hidden flags field is taken out of the list before anything else sees it, and where it
     // sits is kept instead; it is laid out with the rest, so this cannot move the other fields
@@ -161,6 +173,7 @@ pub fn read_header(dbf: &[u8]) -> Result<DbfHeader, DbfError> {
         has_index,
         last_update,
         null_flags,
+        backlink,
     })
 }
 

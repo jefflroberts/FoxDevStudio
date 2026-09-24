@@ -382,7 +382,8 @@ pub fn value_on(ctx: &mut TestCtx, name: &str, args: Vec<Value>) -> Value {
             | BuiltinResult::SuspendFile(_)
             | BuiltinResult::SuspendData { .. }
             | BuiltinResult::RunScript { .. }
-            | BuiltinResult::CallFunction { .. },
+            | BuiltinResult::CallFunction { .. }
+            | BuiltinResult::Evaluate { .. },
         ) => panic!("{name}() suspended, expected a value"),
         Err(e) => panic!("{name}() failed: {e}"),
     }
@@ -429,6 +430,7 @@ pub fn request(name: &str, args: Vec<Value>) -> HostRequest {
         Ok(BuiltinResult::Value(v)) => panic!("{name}() returned {v:?}, expected a host request"),
         Ok(BuiltinResult::RunScript { .. }) => panic!("{name}() asked to run a script"),
         Ok(BuiltinResult::CallFunction { .. }) => panic!("{name}() asked to call a function"),
+        Ok(BuiltinResult::Evaluate { .. }) => panic!("{name}() asked to evaluate an expression"),
         Err(e) => panic!("{name}() failed: {e}"),
     }
 }

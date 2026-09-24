@@ -63,3 +63,41 @@ fn a_call_to_nothing_at_all_is_error_1_naming_the_file() {
     let e = run_program("x = nosuch()", &mut host).err().expect("an error");
     assert_eq!((e.code, e.message.as_str()), (1, "File 'nosuch.prg' does not exist."));
 }
+
+#[test]
+fn a_call_past_the_deepest_level_raises_error_103() {
+    // Measured in Visual FoxPro 9, from a main program at level 2 (the probe runs it with DO):
+    // a function calling itself made 125 calls and PROGRAM(-1) reached 127 before the next call
+    // raised 103; EVALUATE() of it counted the same. From a main program at level 1 that is 126.
+    let (out, _) = run(concat!(
+        "PUBLIC gnDepth, gnLevel\n",
+        "gnDepth = 0\n",
+        "TRY\n",
+        "  Recurse()\n",
+        "CATCH TO oErr\n",
+        "  ? oErr.ErrorNo, oErr.Message\n",
+        "ENDTRY\n",
+        "? gnDepth, gnLevel\n",
+        "gnDepth = 0\n",
+        "TRY\n",
+        "  x = EVALUATE('Recurse()')\n",
+        "CATCH TO oErr\n",
+        "  ? oErr.ErrorNo\n",
+        "ENDTRY\n",
+        "? gnDepth\n",
+        "FUNCTION Recurse\n",
+        "  gnDepth = gnDepth + 1\n",
+        "  gnLevel = PROGRAM(-1)\n",
+        "  Recurse()\n",
+        "ENDFUNC\n",
+    ));
+    assert_eq!(
+        out,
+        vec![
+            "       103 Allowed DO nesting or expression evaluation level exceeded.",
+            "       126        127",
+            "       103",
+            "       126",
+        ]
+    );
+}

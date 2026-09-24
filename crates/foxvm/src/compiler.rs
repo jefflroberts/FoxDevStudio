@@ -1727,22 +1727,28 @@ impl ModuleCompiler {
                 let c = self.constant(Constant::Str(text.clone()));
                 fb.emit(Instr::SetFilter(c));
             }
-            StmtKind::SetRelation { pairs, additive, off } => {
+            StmtKind::SetRelation { pairs, additive, off, area } => {
+                // the parent the IN clause names is selected for as long as the command takes
+                if let Some(a) = area {
+                    self.expr(fb, a);
+                    fb.emit(Instr::PushArea);
+                }
                 match off {
                     Some(alias) => {
-                        let c = self.constant(Constant::Str(alias.upper.clone()));
-                        fb.emit(Instr::Const(c));
+                        self.expr(fb, alias);
                         fb.emit(Instr::SetRelation { count: 1, additive: true, off: true });
                     }
                     None => {
                         for (text, alias) in pairs {
                             let e = self.constant(Constant::Str(text.clone()));
                             fb.emit(Instr::Const(e));
-                            let a = self.constant(Constant::Str(alias.upper.clone()));
-                            fb.emit(Instr::Const(a));
+                            self.expr(fb, alias);
                         }
                         fb.emit(Instr::SetRelation { count: pairs.len() as u16, additive: *additive, off: false });
                     }
+                }
+                if area.is_some() {
+                    fb.emit(Instr::PopArea);
                 }
             }
             StmtKind::Reindex => {
@@ -3742,19 +3748,29 @@ impl ModuleCompiler {
     /// never declared the array still gets one - `AFIELDS(laFields)` is how Visual FoxPro code
     /// is written. Anything else in that position is passed as it stands and the function will
     /// refuse it.
-    fn args_filling_array(&mut self, fb: &mut FuncBuilder, args: &[Arg], at: usize) -> u8 {
+    /// Also answers where a property named as the array went: `AERROR(THISFORM.aErrInfo)` fills
+    /// a slot of its own with the property's array, and the caller writes it back afterwards.
+    fn args_filling_array(&mut self, fb: &mut FuncBuilder, args: &[Arg], at: usize) -> (u8, Option<u32>) {
+        let mut property = None;
         for (i, a) in args.iter().enumerate() {
             match &a.expr.kind {
                 ExprKind::Var(n) if i == at && !a.by_ref => {
                     let v = self.var_target(fb, n);
                     fb.emit(Instr::RefOrMakeArray(v));
                 }
+                ExprKind::Member { obj, .. } if i == at && !a.by_ref && !matches!(&obj.kind, ExprKind::Var(m) if m.upper == "M") => {
+                    let slot = fb.temp("fill");
+                    self.expr(fb, &a.expr);
+                    fb.emit(Instr::StoreLocal(slot));
+                    fb.emit(Instr::RefOrMakeArray(Var::Local(slot)));
+                    property = Some(slot);
+                }
                 _ => {
                     self.args(fb, std::slice::from_ref(a), true, false);
                 }
             }
         }
-        args.len() as u8
+        (args.len() as u8, property)
     }
 
     // ----- expressions -----
@@ -3999,6 +4015,31 @@ impl ModuleCompiler {
             fb.patch_here(jend);
             return;
         }
+        // Measured: VARTYPE() of a variable that does not exist answers "U" rather than raising
+        // error 12, `m.` or not - CodeMine asks `VARTYPE(m.pnCdeControlFlagParameter)` of a
+        // PRIVATE that is only sometimes there. So a bare name that is not a local is asked
+        // about first, and read only when it is there.
+        if name.upper == "VARTYPE"
+            && let Some(first) = args.first().filter(|a| !a.by_ref)
+            && let Some((written, memvar)) = bare_variable(&first.expr)
+            && fb.local(&written.upper).is_none()
+        {
+            let n = self.name(&written.upper);
+            fb.emit(Instr::NameDefined { name: n, memvar });
+            let jf = fb.emit(Instr::JumpIfFalse(0));
+            let (id, spec) = builtins::lookup("VARTYPE").expect("VARTYPE is a builtin");
+            if let Some(msg) = builtins::arity_error(spec, args.len()) {
+                self.error(e.span, msg);
+            }
+            let argc = self.args(fb, args, true, false);
+            fb.emit(Instr::CallBuiltin { id, argc });
+            let jend = fb.emit(Instr::Jump(0));
+            fb.patch_here(jf);
+            let u = self.constant(Constant::Str("U".into()));
+            fb.emit(Instr::Const(u));
+            fb.patch_here(jend);
+            return;
+        }
         // LOOKUP names two fields and searches a third: the names are what it wants, not what
         // the fields hold, so a bare field reference is passed as the name it is written with
         if name.upper == "LOOKUP" && args.len() >= 3 {
@@ -4025,11 +4066,16 @@ impl ModuleCompiler {
             if let Some(msg) = builtins::arity_error(spec, args.len()) {
                 self.error(e.span, msg);
             }
-            let argc = match builtins::array_to_fill(spec.name) {
+            let (argc, property) = match builtins::array_to_fill(spec.name) {
                 Some(at) => self.args_filling_array(fb, args, at),
-                None => self.args(fb, args, true, false),
+                None => (self.args(fb, args, true, false), None),
             };
             fb.emit(Instr::CallBuiltin { id, argc });
+            // the array the function filled goes back into the property it was named by
+            if let Some(slot) = property {
+                fb.emit(Instr::LoadLocal(slot));
+                self.store_target(fb, &args[builtins::array_to_fill(spec.name).unwrap_or(0)].expr);
+            }
             return;
         }
         if name.upper == "DODEFAULT" {
@@ -4040,6 +4086,15 @@ impl ModuleCompiler {
         let argc = self.args(fb, args, true, false);
         let n = self.name(&name.upper);
         fb.emit(Instr::IndexOrCall { name: n, argc });
+    }
+}
+
+/// A variable written out on its own - `name`, or `m.name` (true) - as its name.
+fn bare_variable(e: &Expr) -> Option<(&Name, bool)> {
+    match &e.kind {
+        ExprKind::Var(n) => Some((n, false)),
+        ExprKind::Member { obj, name } if matches!(&obj.kind, ExprKind::Var(m) if m.upper == "M") => Some((name, true)),
+        _ => None,
     }
 }
 

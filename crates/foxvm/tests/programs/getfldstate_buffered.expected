@@ -1,0 +1,5 @@
+clean 1 111 1 1
+changed 1 112 2
+appended 3 333
+appended+ 3 343
+types N C

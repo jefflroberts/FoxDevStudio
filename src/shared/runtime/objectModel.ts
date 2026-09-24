@@ -15,7 +15,7 @@ import { FOXPRO_METHODS, REPORT_METHODS } from '../language/foxproMethods';
 import { Collection } from './collection';
 import { registryObject } from './dataEnvironment';
 import { HostError, type HostReads, type RuntimeError } from './host';
-import { isDate, isDateTime, propToVm, vmToProp, type VmArray, type VmValue } from './values';
+import { isArray, isDate, isDateTime, propToVm, vmToProp, type VmArray, type VmValue } from './values';
 import { baseClassToControlType } from '../vfp/importForm';
 import { isNonVisualBaseClass } from './classDef';
 import { oleEmulation } from '../vfp/oleControl';
@@ -549,6 +549,16 @@ export class RuntimeObject {
    * lays a table out row by row and lets either `a[r,c]` or a single running subscript reach an
    * element, so one flat list holds it and the column count says how to read a pair.
    */
+  /**
+   * The whole of an array put into the property, its shape with it: what a function that fills
+   * an array - `AERROR(THISFORM.aErrInfo)` - leaves there when it is handed the property.
+   */
+  assignArray(name: string, value: VmArray): void {
+    this.propNames.set(name.toLowerCase(), this.propNames.get(name.toLowerCase()) ?? name);
+    this.arrays.set(name.toLowerCase(), { values: [...value.$arr], cols: Math.max(0, value.$cols) });
+    this.notify();
+  }
+
   declareArray(name: string, rows: number, cols = 0, fill: VmValue = false): void {
     const length = Math.max(0, rows) * Math.max(1, cols);
     this.propNames.set(name.toLowerCase(), name);
@@ -1350,8 +1360,10 @@ export class Desktop implements HostReads {
   /**
    * The same, for a value the form is only trying to work out: a property expression that will
    * not run is not a fault in the program that opened the form, so it is not reported as one.
+   * `thisHandle` is the object the expression belongs to, which THIS in it means. It throws when
+   * the expression cannot be worked out.
    */
-  evaluateQuietly: ((expression: string) => Promise<VmValue>) | null = null;
+  evaluateQuietly: ((expression: string, thisHandle?: number) => Promise<VmValue>) | null = null;
 
   /** Injected by the session: runs a line, for what a method has to say in FoxPro. */
   runLine: ((text: string) => Promise<void>) | null = null;
@@ -1518,7 +1530,9 @@ export class Desktop implements HostReads {
    */
   async runFormLifecycle(instance: FormInstance, options: CreateFormOptions = {}): Promise<boolean> {
     await this.workOutProperties(instance, options.expressions, { inFrame: options.inFrame });
-    await this.fire(instance, 'Load');
+    // measured: Load is a form's event - a Custom or a Session with a method called Load does
+    // not have it run when the object is made, and CodeMine's cmRegProperties has one
+    if (!instance.nonVisual) await this.fire(instance, 'Load');
 
     const controls = instance.descendants().reverse();
     for (const control of controls) {
@@ -1574,11 +1588,13 @@ export class Desktop implements HostReads {
       const target = this.memberAt(instance, where.slice(0, cut));
       if (!target) continue;
       try {
-        const value = inFrame ? inFrame(source) : await work!(source);
+        // THIS in a property's expression is the object the property belongs to
+        const value = inFrame ? inFrame(source) : await work!(source, target.handle);
         // a date is a value like any other here - `Value = (DATE())` starts a date text box -
         // even though it is not one a document could have written down
         if (isDate(value) || isDateTime(value)) target.setMomentValue(where.slice(cut + 1), value);
-        else if (value !== null && typeof value !== 'object') target.set(where.slice(cut + 1), value);
+        // `oApp = (NULL)` is how CodeMine says a reference starts out empty: .NULL. is a value
+        else if (value === null || typeof value !== 'object') target.set(where.slice(cut + 1), value);
       } catch {
         // the form still opens: a value it could not work out stays as it was
       }
@@ -2195,6 +2211,7 @@ export class Desktop implements HostReads {
     const object = handleOf(value);
     if (object !== undefined) target.setObjectValue(name, object);
     else if (isDate(value) || isDateTime(value)) target.setMomentValue(name, value);
+    else if (isArray(value)) target.assignArray(name, value);
     else target.set(name, vmToProp(value), 'program');
   }
 
@@ -2759,6 +2776,9 @@ export class Desktop implements HostReads {
 
   private addObject(parent: RuntimeObject, name: string, className: string, oleClass = ''): Promise<VmValue> | VmValue {
     const type = baseClassToControlType(className);
+    // a class that is not a base class comes out of the loaded class libraries, as NewObject's
+    // does - Shutter Ace adds its logout timer with `THIS.AddObject('tmrShutDown', 'tmrSystemLogout')`
+    if (type === null && this.libraryObject) return this.newObject(parent, name, className, '');
     if (type === null || type === 'Form') throw new HostError(1733, `Class definition ${className.toUpperCase()} is not found.`);
 
     // measured: the product upper-cases the name a control is added under, so that is what the

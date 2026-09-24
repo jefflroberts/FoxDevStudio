@@ -517,6 +517,23 @@ fn sys_checksum(a: &[Value]) -> Result<Value, RtError> {
     Ok(Value::str(crc.to_string()))
 }
 
+/// SYS(16 [, nLevel]): the routine running at that level, the one running now without one.
+/// Measured: the main program answers with its file, a procedure or a method with
+/// `PROCEDURE NAME` and then its file, level 0 answers as level 1 does, and a level deeper than
+/// the running one is "" - CodeMine walks the levels up from 1 until it gets one. The file is
+/// the module's name with `.FXP` after it: the folder it was read from is not known here.
+fn sys_program(c: &mut dyn BuiltinCtx, a: &[Value]) -> Result<String, RtError> {
+    let level = match a.get(1) {
+        Some(_) => arg_int(a, 1)?.max(1) as usize,
+        None => c.program_level(),
+    };
+    let (Some(name), Some(module)) = (c.program_at(level), c.module_at(level)) else {
+        return Ok(String::new());
+    };
+    let file = format!("{}.FXP", module.to_ascii_uppercase());
+    Ok(if name.eq_ignore_ascii_case(&module) || name == "MAIN" { file } else { format!("PROCEDURE {name} {file}") })
+}
+
 /// SYS(): 3 and 2015 return unique names, 16 the running program, 2007 a checksum, and
 /// everything else "" so a program that queries the environment keeps running.
 fn f_sys(c: &mut dyn BuiltinCtx, a: Vec<Value>) -> Result<BuiltinResult, RtError> {
@@ -524,7 +541,7 @@ fn f_sys(c: &mut dyn BuiltinCtx, a: Vec<Value>) -> Result<BuiltinResult, RtError
     ok(match n {
         3 => Value::str(unique_token(8)),
         2015 => Value::str(format!("_{}", unique_token(9))),
-        16 => Value::str(c.program_name()),
+        16 => Value::str(sys_program(c, &a)?),
         2007 => sys_checksum(&a)?,
         // SYS(1271, oObject): the file a form was built from. Measured in vfp9.exe: it answers
         // .F. - a logical, not an empty string - for an object that came from no file, an
@@ -576,9 +593,8 @@ fn f_vartype(_c: &mut dyn BuiltinCtx, a: Vec<Value>) -> Result<BuiltinResult, Rt
     ok(Value::str(a[0].vartype().to_string()))
 }
 
-fn f_evaluate(c: &mut dyn BuiltinCtx, a: Vec<Value>) -> Result<BuiltinResult, RtError> {
-    let expr = arg_str(&a, 0)?;
-    ok(c.evaluate(&expr)?)
+fn f_evaluate(_c: &mut dyn BuiltinCtx, a: Vec<Value>) -> Result<BuiltinResult, RtError> {
+    Ok(BuiltinResult::Evaluate { expr: arg_str(&a, 0)?.to_string() })
 }
 
 fn f_empty(_c: &mut dyn BuiltinCtx, a: Vec<Value>) -> Result<BuiltinResult, RtError> {

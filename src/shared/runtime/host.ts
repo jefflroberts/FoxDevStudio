@@ -272,7 +272,8 @@ export interface BreakStop {
 
 export type StepResult =
   | { state: 'done'; value: VmValue; nodefault: boolean }
-  | { state: 'error'; error: RuntimeError; stack: StackEntry[] }
+  /** `passes`: the error is for the fiber that called this one, and `passError` takes it there. */
+  | { state: 'error'; error: RuntimeError; stack: StackEntry[]; passes?: boolean }
   | { state: 'suspend'; request: HostRequest };
 
 export interface Diagnostic {
@@ -313,6 +314,14 @@ export interface VmLike {
   resumeError(fiber: number, code: number, message: string): void;
   abort(fiber: number): void;
   abortAll(): void;
+  /**
+   * Says which fiber a new one runs for: the one waiting on the host request that started it.
+   * An error nothing in the new fiber handles then goes back to a TRY waiting in that one.
+   * Optional: a fake VM in a scheduler test need not have it.
+   */
+  setCaller?(fiber: number, caller: number): void;
+  /** Ends a fiber whose error `passes`, raising the error in its caller; answers the caller. */
+  passError?(fiber: number): number | null;
   callStack(fiber: number): StackEntry[];
   setSetting(name: string, value: VmValue): void;
   /**

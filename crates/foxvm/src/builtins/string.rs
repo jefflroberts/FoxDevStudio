@@ -969,46 +969,69 @@ fn f_memlines(c: &mut dyn BuiltinCtx, a: Vec<Value>) -> Result<BuiltinResult, Rt
     ok(Value::number(lines.len() as f64))
 }
 
-/// MLINE(memo, n [, nCharacterOffset]): one line of it, counting from 1.
+/// MLINE(memo, n [, nCharacterOffset]): the nth line of the memo counting from the offset (0
+/// when there is none), wrapped at SET MEMOWIDTH, and `_MLINE` left just past it.
 ///
-/// With a third argument, `n` stops being simply which line to return: measured against
-/// vfp9.exe, `nCharacterOffset` counts from the start of the whole memo, in a numbering where
-/// each line's own break - however many bytes CR/LF really is - counts as exactly one slot.
-/// `MLINE(memo, row, off)` starts at `row`, walks forward a line at a time for as long as
-/// `off` has moved past the line it is standing on, and returns what is left of the line it
-/// lands on from the local offset onward (a local offset before that line's own start, from a
-/// `row` later than where `off` would have landed, returns the line whole; one past its end
-/// returns ""). Two lines never covered by the docs and only found this way: an `off` that
-/// overruns `row`'s own line does not fail or spill mid-line into the next one - it hands back
-/// the *entire* next line - and the walk never goes backward, so a `row` later than where `off`
-/// points also just hands back that later line whole.
+/// Measured against vfp9.exe: the offset is a character position in the memo itself, and the
+/// lines are counted from there - `MLINE(t, 2, 5)` with the offset inside the second line is the
+/// third line. A line ends at a CR or an LF; `_MLINE` is left just after that one character, and
+/// an LF straight after a CR is passed over when the next line is read, so a memo written with
+/// CR+LF reads a line at a time with `MLINE(t, 1, _MLINE)`, which is how CodeMine takes its
+/// messages apart. Past the end, the line is "" and `_MLINE` is the memo's length.
 fn f_mline(c: &mut dyn BuiltinCtx, a: Vec<Value>) -> Result<BuiltinResult, RtError> {
-    let lines = memo_lines(c, &a, 0)?;
+    let text: Vec<char> = arg_str(&a, 0)?.chars().collect();
     let n = arg_int(&a, 1)?;
-    if n < 1 || n as usize > lines.len() {
-        return ok(Value::str(""));
-    }
-    let Some(_) = a.get(2) else {
-        return ok(Value::str(lines[n as usize - 1].clone()));
+    let offset = match a.get(2) {
+        Some(_) => arg_int(&a, 2)?.max(0) as usize,
+        None => 0,
     };
-    let skip = arg_int(&a, 2)?;
-    let mut starts = Vec::with_capacity(lines.len());
-    let mut at = 0i64;
-    for l in &lines {
-        starts.push(at);
-        at += l.len() as i64 + 1;
+    let width = (c.settings().memowidth as usize).max(1);
+    let (line, next) = mline_from(&text, n, offset, width);
+    c.store_named("_MLINE", Value::number(next as f64))?;
+    ok(Value::str(line))
+}
+
+/// The `n`th line from character `offset`, and where the one after it starts.
+fn mline_from(text: &[char], n: i64, offset: usize, width: usize) -> (String, usize) {
+    let len = text.len();
+    let mut pos = offset.min(len);
+    if n < 1 {
+        return (String::new(), pos);
     }
-    let mut idx = n as usize - 1;
-    while idx + 1 < lines.len() && skip >= starts[idx + 1] {
-        idx += 1;
+    for i in 1..=n {
+        // the LF of a CR+LF belongs to the break before it
+        if pos < len && text[pos] == '\n' && pos > 0 && text[pos - 1] == '\r' {
+            pos += 1;
+        }
+        if pos >= len {
+            return (String::new(), len);
+        }
+        let start = pos;
+        let mut end = start;
+        while end < len && text[end] != '\r' && text[end] != '\n' {
+            end += 1;
+        }
+        let (line_end, next) = if end - start > width {
+            // too long for the memo width: the break is the last space that fits, and a word
+            // longer than the line is cut - as MEMLINES counts them
+            let fits = &text[start..=start + width];
+            let cut = fits.iter().rposition(|&ch| ch == ' ').filter(|&k| k > 0).unwrap_or(width);
+            let mut after = start + cut;
+            while after < end && text[after] == ' ' {
+                after += 1;
+            }
+            (start + cut, after)
+        } else if end < len {
+            (end, end + 1)
+        } else {
+            (end, end)
+        };
+        if i == n {
+            return (text[start..line_end].iter().collect(), next);
+        }
+        pos = next;
     }
-    let local = (skip - starts[idx]).max(0) as usize;
-    let line = lines[idx].as_bytes();
-    ok(Value::str(if local >= line.len() {
-        String::new()
-    } else {
-        String::from_utf8_lossy(&line[local..]).into_owned()
-    }))
+    (String::new(), pos)
 }
 
 /// ATLINE and ATCLINE: the number of the line a match is on, or 0.

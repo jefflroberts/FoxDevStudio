@@ -32,6 +32,7 @@ import type { LowLevelValue } from '@shared/ipc/api';
 import { useProjectStore } from '../stores/projectStore';
 import { compileForm, compileSnippet, createVm, type WasmVm } from './vmBridge';
 import { readHeaderFiles } from './headerFiles';
+import { definesIn, expandAllDefines } from '@shared/runtime/headerDefines';
 import { reasonLabel, useDebugStore } from './debugSession';
 import {
   UnsupportedComObject,
@@ -336,7 +337,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
     desktop.evaluate = (expression) => runExpression(expression);
     // a property the form works out for itself: what it comes to, or nothing, and either way
     // not an error in the program that opened the form
-    desktop.evaluateQuietly = (expression) => runExpression(expression, true);
+    desktop.evaluateQuietly = (expression, thisHandle) => runExpression(expression, true, thisHandle ?? null);
     desktop.runLine = (text) => runSnippet(text, 'line').then(() => undefined);
     desktop.setVariable = (name, value) => vm.setGlobal(name, value);
     desktop.quitRequested = () => void get().cancel();
@@ -463,6 +464,8 @@ export const useSessionStore = create<SessionState>((set, get) => {
       (library, from) => print({ kind: 'error', text: `${basename(from)}: class library "${library}" was not found; its classes are missing what they inherit from it` }),
     );
     const classModules = new Map<string, number>();
+    /** The `#DEFINE`s of each of those classes' headers, by the same key. */
+    const classDefines = new Map<string, Map<string, string>>();
 
     const scheduler = new Scheduler(vm, { perform: (request, ctx) => perform(request, ctx) }, {
       onError: (error, stack) =>
@@ -727,6 +730,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
         const headers = await readHeaderFiles(formHeaderRefs(doc), [dirname(library.path), ...(ffcDir === '' ? [] : [ffcDir])]);
         compiled = vm.loadModule(requireBytes(`${library.alias}.${definition.name}`, compileForm(definition.name, formMethodSources(doc), headers)));
         classModules.set(key, compiled);
+        classDefines.set(key, definesIn(headers));
       }
       // a visual class is a window or a control, so the desktop has to be there to put it on
       if (!isNonVisualBaseClass(definition.baseClass)) showDesktop();
@@ -739,7 +743,8 @@ export const useSessionStore = create<SessionState>((set, get) => {
           library: library.path,
           parentClass: definition.parentClass ?? '',
           arrays: definition.meta?.vfp?.arrays,
-          expressions: definition.meta?.vfp?.expressions,
+          // the constants of the class's header are in its property expressions as in its code
+          expressions: expandAllDefines(definition.meta?.vfp?.expressions, classDefines.get(key) ?? new Map()),
         },
         into,
       );
@@ -894,7 +899,9 @@ export const useSessionStore = create<SessionState>((set, get) => {
         // object's: an inherited method that calls up must not find itself again.
         case 'CallParentMethod': {
           const target = desktop.object(request.obj);
-          const form = target?.form();
+          // whose module holds the running code: the form for a control of it, the object itself
+          // for one made from a library class - which may be sitting inside some other object
+          const form = target?.codeOwner();
           if (!target || !form || form.module < 0) return true;
           const settle = (outcome: ReturnType<typeof scheduler.dispatch>) =>
             outcome instanceof Promise ? outcome.then((o) => o.value) : outcome!.value;
@@ -1121,6 +1128,17 @@ export const useSessionStore = create<SessionState>((set, get) => {
                 if (object === undefined) throw new HostError(1733, `Class definition ${request.class.toUpperCase()} is not found.`);
                 return object === null ? false : { $obj: object.handle };
               }
+              // Empty is the class SCATTER NAME fills in, and ADDPROPERTY() gives members to: an
+              // object of nothing but what is added to it. It stands on Custom here, which gives
+              // it Custom's members too - a difference AMEMBERS() can see
+              if (request.class.trim().toLowerCase() === 'empty') {
+                const empty = desktop.createBaseObject('Custom');
+                if (empty) {
+                  empty.className = 'Empty';
+                  empty.declaredBaseClass = 'Empty';
+                  return { $obj: empty.handle };
+                }
+              }
               // the classes Visual FoxPro itself provides come before COM does
               const built = baseClassObject(request.class);
               if (built) return { $obj: desktop.hostHandle(built) };
@@ -1265,8 +1283,11 @@ export const useSessionStore = create<SessionState>((set, get) => {
         // the value and the FERROR() number, which the VM keeps
         case 'FileOp':
           return (async () => {
-            const path = request.path ? await locate(request.path, request.search) : '';
-            const target = request.target && request.op !== 'dir' ? await reach(request.target) : request.target;
+            // A name that does not say where it starts is in the project's folder, as every other
+            // file a program names is - FULLPATH("data\appdata.dbc") included. A drive is not a file.
+            const named = (p: string) => (request.op === 'diskspace' || request.op === 'drivetype' ? p : at(p));
+            const path = request.path ? await locate(named(request.path), request.search.map(named)) : '';
+            const target = request.target && request.op !== 'dir' ? await reach(named(request.target)) : request.target;
             const result = await getApi().files.lowlevel({ ...request, path, target });
             const value = lowLevelToVm(result.value);
             return { $arr: [value, result.error], $cols: 0 };
@@ -1603,7 +1624,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
       };
     };
 
-    async function runSnippet(text: string, label: string, quiet = false): Promise<VmValue> {
+    async function runSnippet(text: string, label: string, quiet = false, thisHandle: number | null = null): Promise<VmValue> {
       const out = compileSnippet(text, label);
       if (!out.bytes) {
         const diag = out.diagnostics.find((d) => d.severity === 'error');
@@ -1613,7 +1634,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
       // program that happens to be running
       const before = quiet ? silenceErrors() : null;
       try {
-        const outcome = await scheduler.runProgram(vm.loadModule(out.bytes));
+        const outcome = await scheduler.runProgram(vm.loadModule(out.bytes), 'MAIN', [], thisHandle);
         return outcome.value;
       } finally {
         before?.();
@@ -1626,8 +1647,22 @@ export const useSessionStore = create<SessionState>((set, get) => {
      * A fragment is a program of its own, so what it works out has to be left somewhere the
      * caller can reach: a public variable, which is what PUBLIC is for.
      */
-    async function runExpression(expression: string, quiet = false): Promise<VmValue> {
-      await runSnippet(`PUBLIC _xmlanswer\n_xmlanswer = ${expression}`, 'XMLAdapter', quiet);
+    async function runExpression(expression: string, quiet = false, thisHandle: number | null = null): Promise<VmValue> {
+      if (!quiet) {
+        await runSnippet(`PUBLIC _xmlanswer\n_xmlanswer = ${expression}`, 'XMLAdapter', quiet);
+        return vm.getGlobal('_xmlanswer');
+      }
+      // A quiet one catches its own failure: the program's ON ERROR is for the program's lines,
+      // and CodeMine's would otherwise report an expression that would not run as a fatal error
+      // - of which its report is made, which it cannot work out, and so on. A TRY is nearer than
+      // ON ERROR, measured.
+      await runSnippet(
+        ['PUBLIC _xmlanswer, _xmlfailed', '_xmlfailed = .F.', 'TRY', `_xmlanswer = ${expression}`, 'CATCH', '_xmlfailed = .T.', 'ENDTRY'].join('\n'),
+        'XMLAdapter',
+        true,
+        thisHandle,
+      );
+      if (vm.getGlobal('_xmlfailed') === true) throw new Error(`${expression} could not be worked out`);
       return vm.getGlobal('_xmlanswer');
     }
 

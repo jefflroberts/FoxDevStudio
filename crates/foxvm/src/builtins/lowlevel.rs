@@ -173,7 +173,7 @@ fn f_ferror(c: &mut dyn BuiltinCtx, _a: Vec<Value>) -> Result<BuiltinResult, RtE
 ///
 /// Nothing here touches the disk: a path is a path whether or not anything of that name exists,
 /// which is why Visual FoxPro can answer for a file that is not there.
-fn resolve_against(base: &str, name: &str) -> String {
+pub(crate) fn resolve_against(base: &str, name: &str) -> String {
     let separators = ['/', '\\'];
     // an absolute name ignores the base; a bare drive letter counts as absolute
     let absolute = name.starts_with(separators) || name.chars().nth(1) == Some(':');
@@ -214,10 +214,14 @@ fn f_fullpath(c: &mut dyn BuiltinCtx, a: Vec<Value>) -> Result<BuiltinResult, Rt
             return ok(Value::str(resolve_against(&base, &name).to_ascii_uppercase()));
         }
     }
+    // measured: a file that is not in the default directory but is on SET PATH is answered
+    // where it was found, and one that is nowhere is answered in the default directory
+    let found = c.settings().search(&name);
     let path = c.settings().at(&name);
     let mut r = op("fullpath");
-    if let HostRequest::FileOp { path: p, .. } = &mut r {
+    if let HostRequest::FileOp { path: p, search, .. } = &mut r {
         *p = path;
+        *search = found;
     }
     file_op(r)
 }

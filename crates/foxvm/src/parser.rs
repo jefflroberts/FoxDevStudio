@@ -462,6 +462,9 @@ struct Parser {
     /// True for a line that has already been through macro substitution, so no part of it is
     /// held back to be read again when it runs.
     macros_done: bool,
+    /// Where a macro stood as a whole argument of a call - `f(&cList)` - by token. What it stands
+    /// for may be several arguments, `@` and all, so the line it is on is read when it runs.
+    macro_arguments: Vec<usize>,
 }
 
 impl Parser {
@@ -483,6 +486,7 @@ impl Parser {
 
             in_query: 0,
             macros_done: false,
+            macro_arguments: Vec::new(),
         }
     }
 
@@ -1269,6 +1273,17 @@ impl Parser {
         false
     }
 
+    /// True when a macro stood as a whole argument of a call on the line beginning at `start`.
+    /// Measured: `Add(1, &cList)` with cList holding `10, 20` is `Add(1, 10, 20)`, and a list of
+    /// `@m.a,@m.b` passes both by reference - text, not a value.
+    fn macro_argument_on_line(&self, start: usize) -> bool {
+        let mut eol = start;
+        while eol < self.toks.len() && !self.toks[eol].is_newline() {
+            eol += 1;
+        }
+        self.macro_arguments.iter().any(|&at| at >= start && at < eol)
+    }
+
     /// True when the line beginning at `start` has a macro inside one of its strings.
     ///
     /// Everywhere else a macro can stand, this parser reads it where it stands. Inside a string
@@ -1367,7 +1382,8 @@ impl Parser {
         // the macro stands for goes into the source, not into the value of the string.
         let failed = result.is_err()
             || self.diags[diags..].iter().any(|d| d.is_error())
-            || (!self.macros_done && self.line_has_macro_in_string(start));
+            || (!self.macros_done && self.line_has_macro_in_string(start))
+            || self.macro_argument_on_line(start);
         if failed
             && matches!(result, Err(_) | Ok(Some(_)))
             && let Some(kind) = self.macro_stmt(start)
@@ -5146,7 +5162,9 @@ impl Parser {
                 return true;
             }
             let here = self.peek_at(n).clone();
-            if !after_dot && stop.iter().any(|k| kw(&here, k)) {
+            let next = self.peek_at(n + 1).clone();
+            let folder = matches!(next.kind, TokKind::Backslash | TokKind::Slash) && next.span.start == here.span.end;
+            if !after_dot && !folder && stop.iter().any(|k| kw(&here, k)) {
                 break;
             }
             after_dot = here.kind == TokKind::Dot;
@@ -5155,9 +5173,15 @@ impl Parser {
         false
     }
 
-    /// A word that ends the file name of a copy and starts a clause of its own.
+    /// A word that ends the file name of a copy and starts a clause of its own. A word with a
+    /// folder separator glued after it is a folder of the path instead: `CREATE DATABASE
+    /// datadvdb` names `datadvdb`, though `data` is how DATABASE may be shortened.
     fn is_copy_word(&mut self) -> bool {
         let tok = self.peek().clone();
+        let next = self.peek_at(1).clone();
+        if matches!(next.kind, TokKind::Backslash | TokKind::Slash) && next.span.start == tok.span.end {
+            return false;
+        }
         COPY_WORDS.iter().any(|k| kw(&tok, k))
     }
 
@@ -5354,12 +5378,14 @@ impl Parser {
     /// `SET RELATION TO eExpr INTO cAlias [, ...] [ADDITIVE]`: what moves the child area, and
     /// where it is. The expression is kept as text because it is evaluated at every record.
     fn set_relation_stmt(&mut self) -> PResult<StmtKind> {
-        // `SET RELATION OFF INTO x` takes one relation away and leaves the others
+        // `SET RELATION OFF INTO x` takes one relation away and leaves the others. Measured:
+        // CodeMine's `SET RELATION OFF INTO (THIS.cWorkarea) IN (m.oParent.cWorkarea)` works.
         if self.eat_kw("OFF") {
             let _ = self.eat_kw("INTO");
-            let off = self.expect_ident("alias").ok();
+            let off = self.relation_area();
+            let area = self.in_clause()?;
             self.skip_line_keep_newline();
-            return Ok(StmtKind::SetRelation { pairs: Vec::new(), additive: true, off });
+            return Ok(StmtKind::SetRelation { pairs: Vec::new(), additive: true, off, area });
         }
         let _ = self.eat_kw("TO");
         let mut pairs = Vec::new();
@@ -5375,24 +5401,35 @@ impl Parser {
             if !self.eat_kw("INTO") {
                 return Err(self.error_here("SET RELATION needs INTO and a work area"));
             }
-            let alias = match self.peek_kind() {
-                TokKind::Ident(name) => {
-                    let tok = self.advance();
-                    Name::new(name, tok.span)
-                }
-                _ => return Err(self.error_here("SET RELATION needs a work area after INTO")),
+            let Some(alias) = self.relation_area() else {
+                return Err(self.error_here("SET RELATION needs a work area after INTO"));
             };
             pairs.push((text, alias));
             if !self.eat(&TokKind::Comma) {
-                let _ = self.eat_kw("ADDITIVE") && {
-                    additive = true;
-                    true
-                };
                 break;
             }
         }
+        let area = self.in_clause()?;
+        additive = additive || self.eat_kw("ADDITIVE");
         self.skip_line_keep_newline();
-        Ok(StmtKind::SetRelation { pairs, additive, off: None })
+        Ok(StmtKind::SetRelation { pairs, additive, off: None, area })
+    }
+
+    /// The work area after INTO: a name, or an expression in brackets.
+    fn relation_area(&mut self) -> Option<Expr> {
+        let span = self.peek().span;
+        if self.eat(&TokKind::LParen) {
+            let e = self.expr_or_recover();
+            self.expect(&TokKind::RParen, "')'").ok();
+            return Some(e);
+        }
+        match self.peek_kind() {
+            TokKind::Ident(name) => {
+                self.advance();
+                Some(Expr::new(ExprKind::Str(name), span))
+            }
+            _ => None,
+        }
     }
 
     /// The tag named by `ORDER [TAG] x [OF file] [ASCENDING|DESCENDING]`, and which way it runs.
@@ -5952,6 +5989,9 @@ impl Parser {
         }
         match self.peek_kind() {
             TokKind::Num(..) => Ok(Some(self.expr()?)),
+            // measured: `SKIP 1 IN THIS.cWorkarea` works in the area whose alias the property
+            // holds - a name with a dot after it is a reference to read, not an alias
+            TokKind::Ident(_) if self.peek_at(1).kind == TokKind::Dot => Ok(Some(self.expr()?)),
             TokKind::Ident(name) => {
                 self.advance();
                 Ok(Some(Expr::new(ExprKind::Str(name), span)))
@@ -6880,6 +6920,26 @@ impl Parser {
         if self.eat_kw("TO") {
             if self.at_eol() {
                 return Ok(StmtKind::Set { setting, value: SetValue::Word(String::new()) });
+            }
+            // `SET CENTURY TO nCentury [ROLLOVER nYear]` takes two values, either of which may be
+            // worked out: measured, CodeMine's `SET CENTURY TO (THIS.nCentury) ROLLOVER
+            // (THIS.nRollover)` sets both
+            if kw_text(&setting.text, "CENTURY") {
+                let save_pos = self.pos;
+                let save_diags = self.diags.len();
+                if let Ok(century) = self.expr() {
+                    let mut values = vec![century];
+                    if self.eat_kw("ROLLOVER")
+                        && let Ok(year) = self.expr()
+                    {
+                        values.push(year);
+                    }
+                    if self.at_eol() {
+                        return Ok(StmtKind::Set { setting, value: SetValue::To(values) });
+                    }
+                }
+                self.pos = save_pos;
+                self.diags.truncate(save_diags);
             }
             // a lone word after TO is normally the setting's own vocabulary - SET DATE TO
             // AMERICAN - but the settings below take a value, and every reference example
@@ -7998,7 +8058,11 @@ impl Parser {
             let e = self.postfix_expr()?;
             return Ok(Arg { expr: e, by_ref: true });
         }
+        let at = self.pos;
         let e = self.expr()?;
+        if !self.macros_done && matches!(e.kind, ExprKind::Macro(_)) {
+            self.macro_arguments.push(at);
+        }
         // `CAST(x AS I)`: the type follows the value; it becomes a second argument
         if self.is_kw("AS") {
             self.advance();

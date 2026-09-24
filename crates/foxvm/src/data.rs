@@ -269,6 +269,7 @@ impl Cursor {
             last_update: None,
             // a cursor holds its rows rather than bytes, so there is nowhere to keep a flag bit
             null_flags: None,
+            backlink: String::new(),
         };
         header.record_count = rows.len() as u64;
         let mut cursor = Cursor::over(Source::Memory { rows }, alias, String::new(), header);
@@ -621,15 +622,22 @@ impl Cursor {
 
     /// GETFLDSTATE(): 1 unchanged, 2 changed, 3 the deletion flag changed, 4 a new record's
     /// field. `index` is the field's position from 1; 0 asks about the record itself.
+    /// GETFLDSTATE() of field `index` (0 is the deletion flag). Measured: 1 unchanged and 2
+    /// changed, or on a record appended while buffered 3 unchanged and 4 changed. The deletion
+    /// flag counts as changed only when DELETE or RECALL changed it, not when a field did.
     pub fn field_state(&self, recno: u64, index: usize) -> u8 {
         let Some(held) = self.held.get(&recno) else { return 1 };
-        if held.appended {
-            return 4;
+        let changed = if index == 0 {
+            self.originals.get(&recno).is_some_and(|was| was.first() != held.bytes.first())
+        } else {
+            held.fields.contains(&(index - 1))
+        };
+        match (held.appended, changed) {
+            (false, false) => 1,
+            (false, true) => 2,
+            (true, false) => 3,
+            (true, true) => 4,
         }
-        if index == 0 {
-            return if held.fields.is_empty() { 3 } else { 2 };
-        }
-        if held.fields.contains(&(index - 1)) { 2 } else { 1 }
     }
 
     /// SETFLDSTATE(): says a field was changed, or was not, without changing what is in it.

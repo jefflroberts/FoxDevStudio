@@ -7,7 +7,7 @@
  *
  *   AVBCO_REPORT=<file> npx vitest run tests/zz-avbco-run.scratch.test.ts
  */
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeAll, describe, it } from 'vitest';
 import { createMemoryApi, type MemoryApi } from '@renderer/api/memoryApi';
@@ -101,6 +101,7 @@ beforeAll(async () => {
 describe('Shutter Ace', () => {
   it('runs main and reports what stops it', async () => {
     const traces: string[] = [];
+    Error.stackTraceLimit = 80;
     (globalThis as { __avbcoTrace?: (e: unknown) => void }).__avbcoTrace = (e) =>
       traces.push(e instanceof Error ? (e.stack ?? e.message) : String(e));
     const api = diskBacked(createMemoryApi());
@@ -116,7 +117,26 @@ describe('Shutter Ace', () => {
 
     const errors: Reported[] = [];
     const dialogs: string[] = [];
+    // the session keeps its last 500 lines; every line is kept here
+    const allOutput: string[] = [];
+    let lastLine: unknown = null;
+    let streamed = 0;
+    let stepped = 0;
+    (globalThis as { __avbcoStep?: (s: string) => void }).__avbcoStep = (line) => {
+      const stream = process.env['AVBCO_STREAM'];
+      if (stream && stepped++ < 300000) appendFileSync(stream, 'STEP ' + line + String.fromCharCode(10));
+    };
     const stop = useSessionStore.subscribe((state) => {
+      const tail = state.output[state.output.length - 1];
+      if (tail && tail !== lastLine) {
+        lastLine = tail;
+        // the first lines say how a run went wrong; a program looping without end would
+        // otherwise fill the heap with the same ones
+        if (allOutput.length < 20000) allOutput.push(`[${tail.kind}] ${tail.text}`);
+        // AVBCO_STREAM=<file>: every line as it happens, for a run that dies before the report
+        const stream = process.env['AVBCO_STREAM'];
+        if (stream && streamed++ < 200000) appendFileSync(stream, `[${tail.kind}] ${tail.text}`+String.fromCharCode(10));
+      }
       if (state.dialog) {
         const { kind, text, resolve: answer } = state.dialog;
         useSessionStore.setState({ dialog: null });
@@ -130,6 +150,7 @@ describe('Shutter Ace', () => {
       }
     });
 
+    if (process.env['AVBCO_TRACE']) useSessionStore.setState({ traceEvents: true });
     const name = main.slice(main.lastIndexOf('/') + 1);
     const run = useSessionStore.getState().runProgram(createProjectSource(), name);
     let finished = false;
@@ -243,10 +264,11 @@ describe('Shutter Ace', () => {
       ...dialogs,
       '',
       '# output',
-      ...state.output.map((o) => `[${o.kind}] ${o.text}`),
+      ...allOutput,
       '',
       '# host exceptions',
-      ...traces.map((t) => t.split('\n').slice(0, 25).join('\n') + '\n----'),
+      `stack overflow in wasm call: ${(globalThis as { __so?: string }).__so ?? 'none'}`,
+      ...traces.map((t) => t.split('\n').slice(0, 200).join('\n') + '\n----'),
     ];
     stop();
     try {

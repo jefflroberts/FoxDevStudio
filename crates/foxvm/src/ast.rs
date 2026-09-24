@@ -613,13 +613,16 @@ pub enum StmtKind {
     /// `SET FILTER TO [lExpr]`: the condition a record has to pass to be seen. The text is
     /// kept as written, because it is evaluated again at every record the pointer crosses.
     SetFilter(String),
-    /// `SET RELATION TO eExpr INTO cAlias [, ...] [ADDITIVE]`, and `SET RELATION OFF INTO x`.
+    /// `SET RELATION TO eExpr INTO cAlias [, ...] [IN area] [ADDITIVE]`, and `SET RELATION OFF
+    /// INTO x [IN area]`. A work area is a name, or an expression in brackets that works one out.
     SetRelation {
         /// The expression text and the work area it is looked up in, one pair per relation.
-        pairs: Vec<(String, Name)>,
+        pairs: Vec<(String, Expr)>,
         additive: bool,
         /// `OFF INTO alias`: that one relation goes and the others stay.
-        off: Option<Name>,
+        off: Option<Expr>,
+        /// `IN area`: the parent, when it is not the selected area.
+        area: Option<Expr>,
     },
     /// `REINDEX`: the index is written back out.
     Reindex,

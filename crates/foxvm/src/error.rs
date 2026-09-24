@@ -62,6 +62,7 @@ impl RtError {
             Self::PROCEDURE_NOT_FOUND => ("Procedure '{}' is not found.", None),
             Self::API_LIBRARY_NOT_FOUND => ("API library is not found.", None),
             Self::TOO_MANY_ARGS => ("Too many arguments.", None),
+            Self::NESTING_TOO_DEEP => ("Allowed DO nesting or expression evaluation level exceeded.", None),
             Self::TOO_FEW_ARGS => ("Too few arguments.", None),
             Self::CONNECTION_HANDLE_INVALID => ("Connection handle is invalid.", None),
             Self::SUBSCRIPT_OUT_OF_RANGE => ("Subscript is outside defined range.", None),
@@ -135,6 +136,8 @@ impl RtError {
     /// which is what is left when a macro stood for a name that is not a character variable.
     pub const UNRECOGNIZED_PHRASE: u32 = 36;
     pub const TYPE_MISMATCH: u32 = 107;
+    /// A call past the deepest program level Visual FoxPro allows - see `Vm::MAX_LEVEL`.
+    pub const NESTING_TOO_DEEP: u32 = 103;
     pub const FEATURE_NOT_AVAILABLE: u32 = 1001;
     pub const CANNOT_CREATE_FILE: u32 = 1102;
     pub const PROCEDURE_NOT_FOUND: u32 = 1162;
@@ -281,6 +284,9 @@ impl RtError {
     }
     pub fn procedure_not_found(name: &str) -> Self {
         Self::about(Self::PROCEDURE_NOT_FOUND, &name.to_ascii_uppercase())
+    }
+    pub fn nesting_too_deep() -> Self {
+        Self::plain(Self::NESTING_TOO_DEEP)
     }
     pub fn too_many_args() -> Self {
         Self::plain(Self::TOO_MANY_ARGS)

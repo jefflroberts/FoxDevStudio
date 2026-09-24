@@ -99,7 +99,23 @@ fn the_name_of_a_routine_is_upper_cased_however_it_was_written() {
          ? PROGRAM(), PROGRAM(1), PROGRAM(2), SYS(16)\n\
          RETURN\n",
     );
-    assert_eq!(out, vec!["MAIN MAIN", "MIXEDCASENAME MAIN MIXEDCASENAME MIXEDCASENAME"]);
+    // SYS(16) names the file as well, and a procedure with the word PROCEDURE - measured, though
+    // the folder the file is in is not known here
+    assert_eq!(out, vec!["MAIN MAIN.FXP", "MIXEDCASENAME MAIN MIXEDCASENAME PROCEDURE MIXEDCASENAME MAIN.FXP"]);
+}
+
+#[test]
+fn sys_16_answers_each_level_and_nothing_past_the_last() {
+    // measured: level 0 is level 1, and a level deeper than the running one is "" - which is
+    // what ends CodeMine's walk up the call stack
+    let out = run(
+        "DO Inner
+         PROCEDURE Inner
+         ? SYS(16, 0), '|', SYS(16, 1), '|', SYS(16, 2), '|', '[' + SYS(16, 3) + ']'
+         RETURN
+",
+    );
+    assert_eq!(out, vec!["MAIN.FXP | MAIN.FXP | PROCEDURE INNER MAIN.FXP | []"]);
 }
 
 #[test]

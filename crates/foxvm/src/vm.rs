@@ -197,6 +197,20 @@ struct Fiber {
     /// The routine a `RETURN TO` is on its way to, while the frames between here and it are
     /// being unwound. Empty text is `RETURN TO MASTER`: the program the run started in.
     return_to: Option<String>,
+    /// The fiber waiting on the host request this one was started to answer - `o.Method()`
+    /// whose method runs as a fiber of its own. An error nothing in here handles goes back to
+    /// it when a TRY there is waiting, as it would in Visual FoxPro, where the call is one stack.
+    caller: Option<FiberId>,
+    /// That error, on its way back to the caller: the host ends this fiber and the caller
+    /// resumes with it (`pass_error`).
+    passing: Option<RtError>,
+}
+
+/// The routine an error happened in, as an Exception's `Procedure` and an Error method's
+/// `cMethod` give it. Measured: `PROGRAM()`'s name without the class it starts with, in lower
+/// case - `MYFORM.CMD.GO` is `cmd.go`, `PLAIN.INSIDE` is `inside`, `MAIN` is `main`.
+fn routine_name(program: &str) -> String {
+    program.split_once('.').map_or(program, |(_, rest)| rest).to_ascii_lowercase()
 }
 
 /// What a function value is: where the code is, and the frame the lambda was written in as far
@@ -523,6 +537,9 @@ struct DbIo {
     /// True when the container is only being attached - read and left open, but not made
     /// current - which is what a `dbname!tablename` in a command does to the database it names.
     attach: bool,
+    /// Where else the container may be, tried in turn when it is not where it was named:
+    /// measured, `OPEN DATABASE name` finds a container on SET PATH.
+    candidates: Vec<String>,
 }
 
 /// The memo file beside a database container.
@@ -1378,6 +1395,9 @@ struct IndexBuild {
     to_file: Option<String>,
     compact: bool,
     keys: Vec<(Value, u32)>,
+    /// The key worked out on the blank record, for a table with no records to give one: the tag
+    /// still has to know whether it holds numbers or text, and how long its text is.
+    blank: Option<Value>,
 }
 
 /// The single-entry indexes a command is opening beside a table, one read at a time.
@@ -1807,24 +1827,98 @@ impl Vm {
         self.fibers.contains_key(&fiber)
     }
 
+    /// Says which fiber `fiber` was started for: the one waiting on the host request that is
+    /// running it. See `Fiber::caller`.
+    pub fn set_caller(&mut self, fiber: FiberId, caller: FiberId) {
+        if let Some(fb) = self.fibers.get_mut(&fiber) {
+            fb.caller = Some(caller);
+        }
+    }
+
+    /// Whether the error `fiber` just stopped with is for its caller rather than the host.
+    pub fn passes_error(&self, fiber: FiberId) -> bool {
+        self.fibers.get(&fiber).is_some_and(|fb| fb.passing.is_some())
+    }
+
+    /// Ends `fiber`, which stopped with an error for its caller, and raises that error in the
+    /// caller at the request it is waiting on. Answers the caller, or `None` when there was no
+    /// such error.
+    pub fn pass_error(&mut self, fiber: FiberId) -> Option<FiberId> {
+        let fb = self.fibers.get_mut(&fiber)?;
+        let err = fb.passing.take()?;
+        let caller = fb.caller?;
+        self.fibers.remove(&fiber);
+        self.resume_error(caller, err);
+        Some(caller)
+    }
+
+    /// The deepest program level a call may reach. Measured: from a main program at level 1 a
+    /// function calling itself gets to level 127, and the call that would make 128 raises error
+    /// 103; EVALUATE() of it counts the same. A method gets one level less - see `MAX_METHOD_LEVEL`.
+    const MAX_LEVEL: usize = 127;
+    /// The same for a method, which the product stops at 126.
+    const MAX_METHOD_LEVEL: usize = 126;
+
+    /// The program level the top frame of `fb` runs at, as `PROGRAM(-1)` counts it: every routine
+    /// on the way down, in this fiber and in the fibers it was started for. A line a macro put
+    /// together is part of the routine it is in, and is not a level.
+    fn level(&self, fb: &Fiber) -> usize {
+        let own = |f: &Fiber| f.frames.iter().filter(|fr| !matches!(fr.kind, FrameKind::Inline { .. })).count();
+        let mut total = own(fb);
+        let mut next = fb.caller;
+        let mut seen = 0;
+        while let Some(id) = next {
+            let Some(c) = self.fibers.get(&id) else { break };
+            total += own(c);
+            next = c.caller;
+            seen += 1;
+            if seen > self.fibers.len() {
+                break;
+            }
+        }
+        total
+    }
+
+    /// Whether a TRY is waiting in a fiber this one was started for, or in theirs.
+    fn caller_in_try(&self, fb: &Fiber) -> bool {
+        let mut next = fb.caller;
+        let mut seen = 0;
+        while let Some(id) = next {
+            let Some(c) = self.fibers.get(&id) else { return false };
+            if !c.handlers.is_empty() {
+                return true;
+            }
+            next = c.caller;
+            seen += 1;
+            if seen > self.fibers.len() {
+                return false;
+            }
+        }
+        false
+    }
+
     /// Runs the fiber until it finishes, fails or needs the host. Finished/failed fibers are removed.
     pub fn step(&mut self, host: &mut dyn Host, fiber: FiberId) -> Step {
         let Some(mut fb) = self.fibers.remove(&fiber) else {
             return Step::Error(RtError::new(0, format!("Fiber {fiber} does not exist")));
         };
+        let mut raised = None;
         if let Some(r) = fb.resumed.take() {
             let pending = fb.pending.take();
             let outcome = match r {
                 Ok(v) => self.apply_resume(host, &mut fb, pending, v),
                 Err(e) => Err(e),
             };
-            if let Err(e) = outcome
-                && let Some(step) = self.raise(host, &mut fb, e, 0)
-            {
-                return step;
+            if let Err(e) = outcome {
+                raised = self.raise(host, &mut fb, e, 0);
             }
         }
-        let step = self.run(host, &mut fb, 0);
+        // an error raised at the request it was waiting on stops (or suspends) the fiber just as
+        // one raised while it runs, so it is kept the same way below
+        let step = match raised {
+            Some(step) => step,
+            None => self.run(host, &mut fb, 0),
+        };
         match step {
             Step::Suspend(_) => {
                 self.fibers.insert(fiber, fb);
@@ -1846,6 +1940,13 @@ impl Vm {
     fn rest_after_error(&mut self, fb: &mut Fiber) {
         fb.pending = None;
         fb.resumed = None;
+        // a macro or EVALUATE() that failed is part of the line it stands in, so it is that
+        // line's routine that carries on, at its next line; the inline frame goes, with
+        // whatever it had pushed
+        while fb.frames.len() > 1 && fb.frames.last().is_some_and(|f| matches!(f.kind, FrameKind::Inline { .. })) {
+            let f = self.pop_frame(fb);
+            fb.stack.truncate(f.stack_base);
+        }
         let Some(fr) = fb.frames.last() else { return };
         let code = &self.proto(fr.module, fr.func).code;
         let next = (fr.pc..code.len()).find(|&i| matches!(code[i], Instr::Stmt(_)));
@@ -1855,10 +1956,11 @@ impl Vm {
                 fb.frames.last_mut().expect("frame").pc = pc;
                 fb.stack.truncate(stmt_sp);
             }
-            // nothing left in this frame: leave it at the end, where running it returns
+            // nothing left in this frame: leave it past the end, where running it returns. Not on
+            // its last instruction, which may want a value the failed line never pushed - an ON
+            // ERROR handler's does, and carrying on from there failed the same way for ever
             None => {
-                let end = code.len().saturating_sub(1);
-                fb.frames.last_mut().expect("frame").pc = end;
+                fb.frames.last_mut().expect("frame").pc = code.len();
                 fb.stack.truncate(stmt_sp);
             }
         }
@@ -2107,6 +2209,9 @@ impl Vm {
             }
             args.truncate(nparams);
         }
+        if matches!(kind, FrameKind::Call { .. } | FrameKind::OnError { .. }) && self.level(fb) >= Self::MAX_LEVEL {
+            return Err(RtError::nesting_too_deep());
+        }
         let mut locals = vec![Value::Logical(false); proto.locals.len()];
         for (i, a) in args.iter().enumerate().take(nparams) {
             // a parameter is a variable, and a variable gives a number a width of its own
@@ -2338,6 +2443,15 @@ impl Vm {
                         }
                     }
                 }
+                // a method runs as a fiber of its own, so its level is checked here, at the call
+                Ok(Flow::Suspend(HostRequest::CallMethod { .. } | HostRequest::CallParentMethod { .. }))
+                    if self.level(fb) >= Self::MAX_METHOD_LEVEL =>
+                {
+                    fb.pending = None;
+                    if let Some(step) = self.raise(host, fb, RtError::nesting_too_deep(), floor) {
+                        return step;
+                    }
+                }
                 Ok(Flow::Suspend(req)) => return Step::Suspend(req),
                 Err(e) => {
                     if let Some(step) = self.raise(host, fb, e, floor) {
@@ -2475,7 +2589,10 @@ impl Vm {
         let located = self.locate(fb, err);
         let noted = located.clone();
         let step = self.handle(host, fb, located, floor);
-        host.error_raised(&noted, !matches!(step, Some(Step::Error(_))));
+        // an error on its way back to the caller is told about there, where it is raised again
+        if fb.passing.is_none() {
+            host.error_raised(&noted, !matches!(step, Some(Step::Error(_))));
+        }
         step
     }
 
@@ -2571,6 +2688,12 @@ impl Vm {
                 return None;
             }
         }
+        // Measured: a TRY in the code that called the method is nearer than ON ERROR (though
+        // not than the object's own Error method, which has had its turn above)
+        if floor == 0 && self.caller_in_try(fb) {
+            fb.passing = Some(err.clone());
+            return Some(Step::Error(err));
+        }
         if floor == 0
             && !fb.in_error_handler
             && !fb.frames.is_empty()
@@ -2628,7 +2751,7 @@ impl Vm {
             name: "Error".into(),
             args: vec![
                 JsonValue::Num(f64::from(err.code)),
-                JsonValue::Str(err.program.clone()),
+                JsonValue::Str(routine_name(&err.program)),
                 JsonValue::Num(f64::from(err.line)),
             ],
         }))
@@ -2828,14 +2951,19 @@ impl Vm {
     /// `&lcPath` names a LOCAL as readily as a private, and a LOCAL lives in a slot of its frame
     /// rather than under its name.
     fn macro_value(&self, fb: &Fiber, upper: &str) -> Option<String> {
+        self.macro_variable(fb, upper)?.as_str().ok().map(|s| s.to_string())
+    }
+
+    /// What a name a macro stands on holds: a local of the running routine, or a variable
+    /// further out.
+    fn macro_variable(&self, fb: &Fiber, upper: &str) -> Option<Value> {
         let top = env_index(fb, fb.frames.len() - 1);
         let frame = &fb.frames[top];
         let proto = self.proto(frame.module, frame.func);
-        let value = match proto.locals.iter().position(|l| l.eq_ignore_ascii_case(upper)) {
+        match proto.locals.iter().position(|l| l.eq_ignore_ascii_case(upper)) {
             Some(slot) => frame.locals.get(slot).cloned().map(|v| v.deref()),
             None => self.load_name(fb, upper),
-        }?;
-        value.as_str().ok().map(|s| s.to_string())
+        }
     }
 
     /// Replaces every macro in a command's text with the text it stands for, as VFP does before
@@ -2881,8 +3009,13 @@ impl Vm {
                 end += 1;
             }
             let name_end = end;
-            // a subscript belongs to the macro: it says which element of the array holds the text
-            if let Some(close) = matches!(chars.get(end), Some('[') | Some('(')).then(|| if chars[end] == '[' { ']' } else { ')' })
+            // a subscript after an array's name belongs to the macro: it says which element holds
+            // the text. After anything else it is part of the line - measured, `DIMENSION
+            // &cArrayProperty[3]` sizes the array the variable names.
+            let name_upper: String = chars[i + 1..name_end].iter().collect::<String>().to_ascii_uppercase();
+            let names_array = matches!(self.macro_variable(fb, &name_upper), Some(Value::Array(_)));
+            if names_array
+                && let Some(close) = matches!(chars.get(end), Some('[') | Some('(')).then(|| if chars[end] == '[' { ']' } else { ')' })
                 && let Some(n) = chars[end..].iter().position(|&x| x == close)
             {
                 end += n + 1;
@@ -3382,6 +3515,13 @@ impl Vm {
                     return Err(RtError::variable_not_found(&name));
                 }
             }
+            Instr::NameDefined { name, memvar } => {
+                let name = &module.names[*name as usize];
+                let defined = self.load_name(fb, name).is_some()
+                    || (!*memvar
+                        && (self.data.cursor().is_some_and(|c| c.has_field(name)) || self.query_field(fb, name).is_some()));
+                fb.stack.push(Value::Logical(defined));
+            }
             Instr::StoreName(n) => {
                 let v = pop!();
                 self.store_name(fb, &module.names[*n as usize], v)?;
@@ -3724,6 +3864,15 @@ impl Vm {
                         // returns lands where the function's value was going to
                         let m = self.compile_inline(Inline::Program, 0, 0, &source, &[])?;
                         self.push_call(fb, m, 0, None, args, FrameKind::Call { discard: false }, false)?;
+                    }
+                    BuiltinResult::Evaluate { expr } => {
+                        // run in this frame exactly as `&expr` would be, so a method it calls can
+                        // stop for the host and the value still lands where the function's goes
+                        let top = fb.frames.last().expect("frame");
+                        let (m, f) = (top.module, top.func);
+                        let locals = self.proto(m, f).locals.clone();
+                        let id = self.compile_inline(Inline::Expression, m, f, &expr, &locals)?;
+                        self.push_inline(fb, id, true);
                     }
                     BuiltinResult::Suspend(mut req) => {
                         // CREATEOBJECT() of a class the program defines carries its definition.
@@ -5533,6 +5682,7 @@ impl Vm {
                     to_file,
                     compact: flags & 16 != 0,
                     keys: Vec::new(),
+                    blank: None,
                 });
             }
             Instr::OpenIdx { count } => {
@@ -5587,6 +5737,14 @@ impl Vm {
                 }
             }
             Instr::IndexEnd => {
+                // an empty table gives no key to shape the tag, so the blank record gives one:
+                // `INDEX ON n TAG n` on a new cursor is a numeric tag that SEEK 1 can search
+                if let Some(expr) = self.index_build.as_ref().filter(|b| b.keys.is_empty()).map(|b| b.key_expr.clone()) {
+                    let blank = self.eval_in_frame(host, fb, &expr).ok();
+                    if let Some(build) = self.index_build.as_mut() {
+                        build.blank = blank;
+                    }
+                }
                 if let Some(req) = self.finish_index()? {
                     fb.pending = Some(Pending::Discard);
                     return Ok(Flow::Suspend(req));
@@ -5620,7 +5778,8 @@ impl Vm {
             Instr::SetRelation { count, additive, off } => {
                 let mut pairs: Vec<crate::data::Relation> = Vec::new();
                 for _ in 0..*count {
-                    let into = pop!().as_str()?.trim().to_string();
+                    // an alias is upper-cased wherever it is kept, however the program spelled it
+                    let into = pop!().as_str()?.trim().to_ascii_uppercase();
                     let expr = if *off { String::new() } else { crate::cdx::stored_expr(&pop!().as_str()?) };
                     pairs.push(crate::data::Relation { expr, into });
                 }
@@ -5930,7 +6089,7 @@ impl Vm {
                 return Ok(Flow::Suspend(HostRequest::CreateException {
                     code: e.code,
                     message: e.message,
-                    program: e.program,
+                    program: routine_name(&e.program),
                     line: e.line,
                     user_value: e.user_value,
                 }));
@@ -7154,7 +7313,8 @@ impl Vm {
             }
             // OPEN DATABASE: the container is read, both files of it
             1 => {
-                let path = self.settings.at(&with_extension(&name.unwrap_or_default(), "dbc"));
+                let name_given = name.unwrap_or_default();
+                let path = self.settings.at(&with_extension(&name_given, "dbc"));
                 if let Some(i) = self.databases.iter().position(|d| d.path.eq_ignore_ascii_case(&path)) {
                     self.databases[i].open = true;
                     // opening the one that is already current says nothing at all - measured
@@ -7169,7 +7329,8 @@ impl Vm {
                     return Ok(None);
                 }
                 self.open_clauses = flags;
-                self.db_io = Some(DbIo { stage: 0, path: path.clone(), dbf: Vec::new(), memo: Vec::new(), writing: false, attach: false });
+                let candidates = self.settings.search(&with_extension(name_given.trim(), "dbc"));
+                self.db_io = Some(DbIo { stage: 0, path: path.clone(), dbf: Vec::new(), memo: Vec::new(), writing: false, attach: false, candidates });
                 Ok(Some(HostRequest::FileReadBytes { path }))
             }
             // CLOSE DATABASES is done a step above this, where the work areas its tables hold
@@ -7214,7 +7375,7 @@ impl Vm {
                 self.databases.retain(|d| !d.path.eq_ignore_ascii_case(&path));
                 self.current_db = None;
                 // the answer to the delete says nothing, and the command is done when it comes
-                self.db_io = Some(DbIo { stage: 1, path: path.clone(), dbf: Vec::new(), memo: Vec::new(), writing: true, attach: false });
+                self.db_io = Some(DbIo { stage: 1, path: path.clone(), dbf: Vec::new(), memo: Vec::new(), writing: true, attach: false, candidates: Vec::new() });
                 Ok(Some(HostRequest::FileDelete { path }))
             }
             // VALIDATE DATABASE: nothing here can be out of step, so nothing is ever wrong.
@@ -7477,7 +7638,7 @@ impl Vm {
                 }
                 let text = self.databases[current].procedure_source().to_string();
                 self.dbc_event(host, fb, "dbc_AfterCopyProc", &args);
-                self.db_io = Some(DbIo { stage: 1, path: path.clone(), dbf: Vec::new(), memo: Vec::new(), writing: true, attach: false });
+                self.db_io = Some(DbIo { stage: 1, path: path.clone(), dbf: Vec::new(), memo: Vec::new(), writing: true, attach: false, candidates: Vec::new() });
                 Ok(Some(HostRequest::FileWrite { path, text, append: false }))
             }
             // PACK DATABASE: the container is written out again, without what was crossed off
@@ -7521,7 +7682,7 @@ impl Vm {
                 }
                 self.dbc_event(host, fb, "dbc_AfterDropTable", &args);
                 let path = self.settings.table_at(&path);
-                self.db_io = Some(DbIo { stage: 1, path: path.clone(), dbf: Vec::new(), memo: Vec::new(), writing: true, attach: false });
+                self.db_io = Some(DbIo { stage: 1, path: path.clone(), dbf: Vec::new(), memo: Vec::new(), writing: true, attach: false, candidates: Vec::new() });
                 Ok(Some(HostRequest::FileDelete { path }))
             }
             // LIST DATABASE
@@ -7558,6 +7719,10 @@ impl Vm {
         match state.stage {
             0 => {
                 state.dbf = bytes_of(&reply.unwrap_or(Value::Null));
+                if state.dbf.is_empty() && !state.candidates.is_empty() {
+                    state.path = state.candidates.remove(0);
+                    return Ok(Some(HostRequest::FileReadBytes { path: state.path.clone() }));
+                }
                 state.stage = 1;
                 Ok(Some(HostRequest::FileReadBytes { path: memo_path }))
             }
@@ -7590,7 +7755,7 @@ impl Vm {
         let db = self.databases.get(index)?;
         let (dbf, memo) = crate::dbc::write_dbc(&db.objects);
         let path = db.path.clone();
-        self.db_io = Some(DbIo { stage: 0, path: path.clone(), dbf: Vec::new(), memo, writing: true, attach: false });
+        self.db_io = Some(DbIo { stage: 0, path: path.clone(), dbf: Vec::new(), memo, writing: true, attach: false, candidates: Vec::new() });
         Some(HostRequest::FileWriteBytes { path, bytes: dbf })
     }
 
@@ -7775,7 +7940,7 @@ impl Vm {
     /// Starts reading a container so that a name reaching into it can be resolved, and says what
     /// to ask the host for. It is read exactly as `OPEN DATABASE` reads one, and left open.
     fn attach_database(&mut self, path: String) -> HostRequest {
-        self.db_io = Some(DbIo { stage: 0, path: path.clone(), dbf: Vec::new(), memo: Vec::new(), writing: false, attach: true });
+        self.db_io = Some(DbIo { stage: 0, path: path.clone(), dbf: Vec::new(), memo: Vec::new(), writing: false, attach: true, candidates: Vec::new() });
         HostRequest::FileReadBytes { path }
     }
 
@@ -8646,14 +8811,22 @@ impl Vm {
         // every record of a table gives a key of the same type, so the first one decides the
         // shape of the whole tag: eight bytes for a number or a date, one for a logical, and
         // for text as many characters as the longest key needs
-        let sample = build.keys.first().map(|(v, _)| v.deref()).unwrap_or(Value::str(""));
+        let sample = build.keys.first().map(|(v, _)| v.deref()).or_else(|| build.blank.clone()).unwrap_or(Value::str(""));
         let numeric = matches!(sample, Value::Number(..) | Value::Date(_) | Value::DateTime(_));
         let key_len = if numeric {
             8
         } else if matches!(sample, Value::Logical(_)) {
             1
         } else {
-            build.keys.iter().filter_map(|(v, _)| v.as_str().ok().map(|s| s.chars().count())).max().unwrap_or(1).clamp(1, 240)
+            build
+                .keys
+                .iter()
+                .map(|(v, _)| v)
+                .chain(build.blank.iter())
+                .filter_map(|v| v.as_str().ok().map(|s| s.chars().count()))
+                .max()
+                .unwrap_or(1)
+                .clamp(1, 240)
         };
         let mut entries: Vec<crate::cdx::Entry> = Vec::with_capacity(build.keys.len());
         for (value, recno) in &build.keys {
@@ -9387,6 +9560,7 @@ impl Vm {
             return Err(RtError::about(RtError::HAVING_INVALID, field));
         }
         let reply = fb.data_reply.take();
+        let answered = reply.is_some();
         let cursor = match area {
             Some(name) => self
                 .data
@@ -9413,6 +9587,14 @@ impl Vm {
             && recno <= cursor.count()
         {
             if !cursor.page_holds(recno) {
+                // a page that came back without the record the header counts is a file shorter
+                // than it says; asking again would get the same answer for ever
+                if answered && cursor.take_expected_memo().is_none() {
+                    return Err(RtError::new(
+                        2091,
+                        format!("Table \"{}\" has become corrupted. The table will need to be repaired before using again.", cursor.alias),
+                    ));
+                }
                 let first = cursor.page_start(recno);
                 cursor.expect_page(first);
                 return Ok(FieldRead::Suspend(HostRequest::DataRead { handle, first: first as f64, count: PAGE_RECORDS }));
@@ -9740,11 +9922,13 @@ impl Vm {
                 self.settings.default_dir = value::join_dir(&self.settings.default_dir, &given);
             }
             "MEMOWIDTH" => {
+                // measured: 8 to 8192, where CodeMine asks for 2048; less than 8 is error 46, and
+                // more than 8192 is taken as 8192 without a word
                 let n = args.first().map(Value::as_number).transpose()?.unwrap_or(50.0);
-                if !(8.0..=256.0).contains(&n) {
-                    return Err(RtError::function_arg_invalid());
+                if n < 8.0 {
+                    return Err(RtError::illegal_value());
                 }
-                self.settings.memowidth = n as u8;
+                self.settings.memowidth = n.min(8192.0) as u16;
             }
             "DECIMALS" => {
                 let n = number_arg(args)?.unwrap_or(2.0);
@@ -9891,6 +10075,12 @@ fn ranged(n: Option<f64>, range: std::ops::RangeInclusive<i64>) -> Result<i64, R
 /// was `SET CENTURY ON` or `OFF` instead; `Some(None)` when it was TO with nothing after it,
 /// which puts today's default back.
 fn century_arg(args: &[Value]) -> Option<Option<(i32, i32)>> {
+    // `TO nCentury ROLLOVER nYear` with the two values worked out
+    if let [century, year] = args
+        && let (Ok(c), Ok(y)) = (century.as_number(), year.as_number())
+    {
+        return Some(Some((c as i32, y as i32)));
+    }
     let text = match args.first().map(Value::deref) {
         Some(Value::Str(s)) => s.to_string(),
         Some(Value::Number(n, ..)) => format!("{n}"),
@@ -10052,6 +10242,19 @@ struct Ctx<'a> {
     fiber: &'a mut Fiber,
 }
 
+impl Ctx<'_> {
+    /// The frame PROGRAM() and LINENO() answer for. Measured: in the command ON ERROR names -
+    /// `ON ERROR oApp.Error(ERROR(), PROGRAM(), LINENO())` - they are the routine and line that
+    /// failed, not the handler's own line; a routine the handler calls answers for itself.
+    fn reporting_frame(&self) -> usize {
+        let env = env_index(self.fiber, self.fiber.frames.len() - 1);
+        if env > 0 && matches!(self.fiber.frames[env].kind, FrameKind::OnError { .. }) {
+            return env_index(self.fiber, env - 1);
+        }
+        env
+    }
+}
+
 impl BuiltinCtx for Ctx<'_> {
     fn data_mut(&mut self) -> &mut DataSession {
         &mut self.vm.data
@@ -10093,7 +10296,7 @@ impl BuiltinCtx for Ctx<'_> {
     /// Upper-cased, as the product says it: `PROCEDURE MixedCaseName` reads back as
     /// `MIXEDCASENAME`, whatever the source wrote.
     fn program_name(&self) -> String {
-        let env = env_index(self.fiber, self.fiber.frames.len() - 1);
+        let env = self.reporting_frame();
         let f = &self.fiber.frames[env];
         self.vm.proto(f.module, f.func).display_name.to_ascii_uppercase()
     }
@@ -10247,11 +10450,11 @@ impl BuiltinCtx for Ctx<'_> {
         Some(self.vm.modules.get(f.module as usize)?.name.clone())
     }
     fn line(&self) -> u32 {
-        let env = env_index(self.fiber, self.fiber.frames.len() - 1);
+        let env = self.reporting_frame();
         self.fiber.frames[env].line
     }
     fn def_line(&self) -> u32 {
-        let env = env_index(self.fiber, self.fiber.frames.len() - 1);
+        let env = self.reporting_frame();
         let f = &self.fiber.frames[env];
         self.vm.proto(f.module, f.func).def_line
     }

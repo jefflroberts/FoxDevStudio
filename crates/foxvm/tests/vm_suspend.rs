@@ -272,3 +272,30 @@ fn a_failed_fiber_can_be_told_to_carry_on_at_the_next_line() {
     assert_eq!(host.output, vec!["before", "", "after"]);
     assert!(!vm.has_fiber(fiber));
 }
+
+#[test]
+fn a_failed_line_inside_a_macro_or_a_handler_carries_on_where_its_routine_does() {
+    // The inline frame the failing text ran in is part of the line it stands in. Carrying on
+    // used to leave it on top, one value short, and every step after that failed with a stack
+    // underflow - which is what a program with nobody to answer its errors then did for ever.
+    for src in [
+        "c = 'nowhere'\n? 'before'\nx = &c\n? 'after'",
+        "? 'before'\nx = EVALUATE('nowhere')\n? 'after'",
+        "c = 'x = nowhere'\n? 'before'\n&c\n? 'after'",
+        // the failing line is the last of an ON ERROR handler, which has no next line to go to
+        "ON ERROR x = nowhere\n? 'before'\ny = nowhere2\n? 'after'",
+        "ON ERROR DO handler\n? 'before'\ny = nowhere2\n? 'after'\nPROCEDURE handler\nz = nowhere\nENDPROC",
+    ] {
+        let mut host = MockHost::new();
+        let mut vm = Vm::new();
+        let id = load(&mut vm, src, "t");
+        let fiber = vm.start(id, 0, None, Vec::new());
+        match vm.step(&mut host, fiber) {
+            Step::Error(e) => assert_eq!(e.code, RtError::VARIABLE_NOT_FOUND, "{src}"),
+            other => panic!("{src}: {other:?}"),
+        }
+        vm.resume(fiber, Value::Null);
+        assert!(matches!(vm.step(&mut host, fiber), Step::Done { .. }), "{src}");
+        assert_eq!(host.output, vec!["before", "after"], "{src}");
+    }
+}

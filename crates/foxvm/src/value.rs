@@ -452,7 +452,7 @@ pub struct Settings {
     pub unique: bool,
     /// SET MEMOWIDTH: the width a memo is taken to wrap at, which is what decides the line a
     /// character of it sits on. 50 is VFP default.
-    pub memowidth: u8,
+    pub memowidth: u16,
     /// SET HEADINGS ON (the default): LIST and DISPLAY of records write a row of field names
     /// above them. It says nothing about LIST STRUCTURE, which always names its columns.
     pub headings: bool,

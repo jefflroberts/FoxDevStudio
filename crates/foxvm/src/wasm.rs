@@ -323,6 +323,17 @@ extern "C" {
     fn resolve_program(this: &HostReads, name: &str) -> f64;
 }
 
+/// A read that answered with an error rather than a value: `{ $hostError: code, message }`,
+/// which is how the host says that reading the member is itself the error.
+fn host_error(v: &JsValue) -> Option<RtError> {
+    if !v.is_object() {
+        return None;
+    }
+    let code = js_sys::Reflect::get(v, &JsValue::from_str("$hostError")).ok()?.as_f64()?;
+    let message = js_sys::Reflect::get(v, &JsValue::from_str("message")).ok().and_then(|m| m.as_string()).unwrap_or_default();
+    Some(RtError::new(code as u32, message))
+}
+
 /// `errorRaised` is optional: a host that does not log errors simply does not define it, and a
 /// structural call to a member that is not there would throw across the wasm boundary.
 fn optional_method(reads: &HostReads, name: &str) -> Option<js_sys::Function> {
@@ -340,11 +351,17 @@ struct JsHost {
 impl Host for JsHost {
     fn get_prop(&mut self, obj: Handle, name: &str) -> Result<Value, RtError> {
         let v = self.reads.get_prop(obj.0, name);
+        if let Some(e) = host_error(&v) {
+            return Err(e);
+        }
         if v.is_undefined() { Err(RtError::property_not_found(name)) } else { Ok(from_js(v)) }
     }
 
     fn get_member(&mut self, obj: Handle, name: &str) -> Result<Member, RtError> {
         let v = self.reads.get_member(obj.0, name);
+        if let Some(e) = host_error(&v) {
+            return Err(e);
+        }
         if let Some(n) = v.as_f64() {
             return Ok(Member::Child(Handle(n as u32)));
         }
@@ -614,7 +631,8 @@ struct MethodIn {
 #[serde(tag = "state", rename_all = "lowercase")]
 enum StepOut {
     Done { value: JsonValue, nodefault: bool },
-    Error { error: RtError, stack: Vec<StackFrame> },
+    /// `passes`: the error is for the fiber that called, which `pass_error` hands it to.
+    Error { error: RtError, stack: Vec<StackFrame>, passes: bool },
     Suspend { request: crate::host::HostRequest },
 }
 
@@ -773,7 +791,7 @@ impl FoxVm {
             self.vm.call_stack(fiber).into_iter().map(|(program, line)| StackFrame { program, line }).collect();
         let out = match self.vm.step(&mut self.host, fiber) {
             Step::Done { value, nodefault } => StepOut::Done { value: JsonValue::from_value(&value), nodefault },
-            Step::Error(error) => StepOut::Error { error, stack },
+            Step::Error(error) => StepOut::Error { error, stack, passes: self.vm.passes_error(fiber) },
             Step::Suspend(request) => StepOut::Suspend { request },
         };
         to_js(&out)
@@ -789,6 +807,15 @@ impl FoxVm {
 
     pub fn abort(&mut self, fiber: u32) {
         self.vm.abort(fiber);
+    }
+
+    pub fn set_caller(&mut self, fiber: u32, caller: u32) {
+        self.vm.set_caller(fiber, caller);
+    }
+
+    /// Ends a fiber whose error is for its caller and raises it there; answers the caller.
+    pub fn pass_error(&mut self, fiber: u32) -> Option<u32> {
+        self.vm.pass_error(fiber)
     }
 
     pub fn abort_all(&mut self) {

@@ -811,7 +811,15 @@ fn f_cursorgetprop(c: &mut dyn BuiltinCtx, a: Vec<Value>) -> Result<BuiltinResul
     let rest = &a[1..];
     let value = match name.as_str() {
         "BUFFERING" => Value::number(on_cursor(c, rest, 1.0, |cur| f64::from(cur.buffering()))?),
-        "SOURCENAME" | "DATABASE" => Value::str(on_cursor(c, rest, String::new(), |cur| cur.path.clone())?),
+        // measured: 3 for a table and for a cursor alike; only a view is anything else
+        "SOURCETYPE" => Value::number(on_cursor(c, rest, 3.0, |_| 3.0)?),
+        "SOURCENAME" => Value::str(on_cursor(c, rest, String::new(), |cur| cur.path.clone())?),
+        // measured: empty for a free table - CodeMine does `SET DATABASE TO` whatever this says -
+        // and for one in a database, the database's path, read from the table's own folder
+        "DATABASE" => Value::str(on_cursor(c, rest, String::new(), |cur| match cur.header.backlink.as_str() {
+            "" => String::new(),
+            link => super::lowlevel::resolve_against(&cur.path, link).to_ascii_uppercase(),
+        })?),
         "TABLES" => Value::str(on_cursor(c, rest, String::new(), |cur| cur.path.clone())?),
         "ALIAS" => Value::str(on_cursor(c, rest, String::new(), |cur| cur.alias.clone())?),
         // a table opened by USE is not a view, and nothing here is fetched a batch at a time
@@ -860,10 +868,19 @@ fn field_position(cursor: &Cursor, value: &Value) -> usize {
     }
 }
 
-/// GETFLDSTATE(nField | cField [, area]): 1 unchanged, 2 changed, 3 the deletion flag changed,
-/// 4 a field of a record that was appended.
+/// GETFLDSTATE(nField | cField [, area]): 1 unchanged, 2 changed, 3 and 4 the same for a record
+/// appended while buffered; field 0 is the deletion flag. -1 answers every one of them, the
+/// deletion flag first, as a string of digits - measured, `"112"` after a REPLACE of the second
+/// of two fields.
 fn f_getfldstate(c: &mut dyn BuiltinCtx, a: Vec<Value>) -> Result<BuiltinResult, RtError> {
     let which = a[0].clone();
+    if matches!(which.deref(), Value::Number(n, ..) if n == -1.0) {
+        let states = on_cursor(c, &a[1..], String::new(), |cur| {
+            let recno = cur.recno();
+            (0..=cur.header.fields.len()).map(|i| char::from(b'0' + cur.field_state(recno, i))).collect()
+        })?;
+        return ok(Value::str(states));
+    }
     let state = on_cursor(c, &a[1..], 1.0, |cur| {
         let index = field_position(cur, &which);
         f64::from(cur.field_state(cur.recno(), index))

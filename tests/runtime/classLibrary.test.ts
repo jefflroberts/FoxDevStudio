@@ -238,6 +238,36 @@ describe('a container making one of its own', () => {
     expect(said[5]).toBe('Form');
   });
 
+  it('runs its parent class Init through DODEFAULT(), inside another object too', async () => {
+    // fdvkid's Init adds one to nCount and calls DODEFAULT(), which is fdvgreeter's Init
+    // writing cGreeting. Measured in Visual FoxPro 9 when fdvclasses.vcx was written: the same
+    // line alone and as a member of another object.
+    const said = await run(
+      'SET CLASSLIB TO fdvclasses',
+      'oKid = CREATEOBJECT("fdvkid")',
+      '? oKid.Greet()',
+      'oHolder = CREATEOBJECT("Custom")',
+      'oHolder.NewObject("kid", "fdvkid")',
+      '? oHolder.kid.Greet()',
+    );
+    expect(said).toEqual(['hello from the library (8)', 'hello from the library (8)']);
+  });
+
+  it('adds a class of a loaded library with AddObject too', async () => {
+    const said = await run(
+      'SET CLASSLIB TO fdvclasses',
+      'oForm = CREATEOBJECT("Form")',
+      '? oForm.AddObject("thebutton", "fdvbutton")',
+      '? oForm.ControlCount, oForm.thebutton.Name, oForm.thebutton.Visible',
+      '? oForm.thebutton.Caption, oForm.thebutton.cTag',
+      'oHolder = CREATEOBJECT("Custom")',
+      '? oHolder.AddObject("kid", "fdvkid")',
+      '? oHolder.kid.Greet()',
+    );
+    // measured in Visual FoxPro 9
+    expect(said).toEqual(['.T.', '         1 THEBUTTON .F.', 'Library button from the library', '.T.', 'hello from the library (8)']);
+  });
+
   it('takes a base class with no file, as AddObject does', async () => {
     const said = await run(
       'oForm = CREATEOBJECT("Form")',

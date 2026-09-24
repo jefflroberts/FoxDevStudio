@@ -80,4 +80,29 @@ describe('a value written as an expression', () => {
       desktop.runFormLifecycle(instance, { expressions: { 'Form1.lblGone.Caption': '(1)' } }),
     ).resolves.toBe(true);
   });
+
+  it('sets .NULL. when that is what it works out to', async () => {
+    // CodeMine writes `oApp = (NULL)` for a reference that starts out empty, and its Access
+    // method fills it in only while it is still .NULL.
+    const desktop = new Desktop();
+    const instance = form(desktop);
+    desktop.evaluate = async () => null;
+
+    await desktop.runFormLifecycle(instance, { expressions: { 'Form1.lblRecord.Caption': '(NULL)' } });
+    expect(instance.child('lblRecord')!.get('Caption')).toBeNull();
+  });
+
+  it('is worked out with THIS meaning the object the property belongs to', async () => {
+    // a class's own expressions say THIS.Parent, THIS.Caption and the like, and in Visual FoxPro
+    // they are worked out on the object being made
+    const desktop = new Desktop();
+    const instance = form(desktop);
+    const asked: Array<number | undefined> = [];
+    desktop.evaluateQuietly = async (_source, thisHandle) => {
+      asked.push(thisHandle);
+      return 'x';
+    };
+    await desktop.runFormLifecycle(instance, { expressions: { 'Form1.lblRecord.Caption': '(THIS.Name)' } });
+    expect(asked).toEqual([instance.child('lblRecord')!.handle]);
+  });
 });

@@ -572,3 +572,15 @@ fn code_pages_decode_high_bytes() {
     let odd = read_table(&b.build(&[(false, vec![0x81])]), None).expect("1252");
     assert_eq!(odd.records[0].get(&odd, "TXT").unwrap().as_text(), "\u{fffd}");
 }
+
+#[test]
+fn a_table_in_a_database_names_it_in_the_backlink() {
+    // the 263 bytes after the field terminator hold the database's path as Visual FoxPro wrote
+    // it, and a free table leaves them empty - which is what CURSORGETPROP("Database") reads
+    let fields = [foxvm::dbf::DbfField::new("n", 'N', 3, 0)];
+    let (mut header, _) = foxvm::dbf::write::encode_header(&fields);
+    assert_eq!(foxvm::dbf::read_header(&header).unwrap().backlink, "");
+    let after = 32 + fields.len() * 32 + 1;
+    header[after..after + 11].copy_from_slice(b"appdata.dbc");
+    assert_eq!(foxvm::dbf::read_header(&header).unwrap().backlink, "appdata.dbc");
+}

@@ -16,5 +16,5 @@ for f in files:
                 for k, v in c['methods'].items():
                     if k.lower() == method.lower():
                         for i, line in enumerate(v.split('\n'), 1):
-                            if i <= 40:
+                            if i <= int(os.environ.get("FIND_APP_LINES", "400")):
                                 print(i, line)

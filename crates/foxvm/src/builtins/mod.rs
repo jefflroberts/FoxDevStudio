@@ -154,6 +154,10 @@ pub enum BuiltinResult {
     /// built-in cannot run FoxPro itself, because the code it runs may stop for the host half
     /// way through. See docs/foxscript.md.
     CallFunction { function: Value, args: Vec<Value> },
+    /// The VM compiles `expr` as an expression of the calling frame and runs it there; its value
+    /// becomes the function's result. `EVALUATE()` is this, for the same reason as `RunScript`:
+    /// the expression may call a method, and a method may stop for the host.
+    Evaluate { expr: String },
 }
 
 impl From<Value> for BuiltinResult {

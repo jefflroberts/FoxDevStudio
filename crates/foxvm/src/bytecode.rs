@@ -276,6 +276,10 @@ pub enum Instr {
     StoreLocal(u32),
     /// Dynamic lookup: privates in this frame, then callers, then PUBLIC. [] -> [v]
     LoadName(u32),
+    /// Whether `LoadName` of that name would find something: a variable, or - unless `memvar`,
+    /// which is `m.name` - a field of the selected table. `VARTYPE()` asks before it reads.
+    /// [] -> [bool]
+    NameDefined { name: u32, memvar: bool },
     /// Dynamic store; an unknown name becomes a PRIVATE of the current frame. [v] -> []
     StoreName(u32),
     /// Sets the slot to .F. (LOCAL declaration).
