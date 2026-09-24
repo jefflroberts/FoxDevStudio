@@ -155,3 +155,22 @@ All documents are JSON with a `$schema` and `version` field. Forms keep Visual F
 ## The website
 
 `marketing/` is the public site and the documentation, a separate Astro package: `cd marketing && npm install && npm run dev`. Its own README says how the pages are arranged and how to add one.
+
+
+## Next prompt
+
+We're continuing the Shutter Ace work in FoxDev Studio. Read HANDOFF-avbco.md in the repo root
+first; it has the rules, machine quirks, branch/PR map, how to run the headless harness, and
+where the run stopped.
+
+Then:
+1. Check the open pull requests (gh pr list -R FoxDevCommunity/FoxDevStudio) and tell me if any
+   were merged or got review comments. Don't reply to comments without asking me.
+2. On the avbco-integration branch, fix the blocker at the top of "Where the run stands": EVALUATE()
+   (and the other inline evaluation paths) must be able to suspend when the expression calls an
+   object's method. Measure what CodeMine's cmEvent.Subscribe does in vfp9.exe first, add tests,
+   and keep the full Rust and TypeScript suites green.
+3. Keep driving Run Main with the harness through CreateGlobalObjects towards the main menu and
+   READ EVENTS, fixing what comes up, measuring in VFP before changing the language.
+4. When a batch is done, commit it on avbco-integration, update HANDOFF-avbco.md, and propose how
+   to split it into topic PRs before opening any.
