@@ -44,12 +44,15 @@ impl FoxArray {
         self.items.is_empty()
     }
     /// Element index from 1-based subscripts; a single subscript on a 2-D array is the linear index.
+    /// A 1-D array is one column to a pair of subscripts: the Foundation Classes' table mover
+    /// reads its one-dimensional `aSkipTables[m.i, 1]`.
     pub fn index(&self, subs: &[usize]) -> Result<usize, RtError> {
         match subs {
             [i] if *i >= 1 && *i <= self.items.len() => Ok(i - 1),
             [r, c] if self.cols > 0 && *r >= 1 && *r <= self.rows && *c >= 1 && *c <= self.cols => {
                 Ok((r - 1) * self.cols + (c - 1))
             }
+            [r, 1] if self.cols == 0 && *r >= 1 && *r <= self.items.len() => Ok(r - 1),
             _ => Err(RtError::invalid_subscript()),
         }
     }
@@ -674,6 +677,15 @@ impl Settings {
     /// A class library as the host should see it. `SET CLASSLIB TO ..\solution` and
     /// `NEWOBJECT("x", "europa")` both name `.vcx` files without saying so - measured - and both
     /// are read from the default directory, as every relative name in the product is.
+    /// Where else a class library named `name` is to be looked for, the missing `.vcx` filled in
+    /// as `class_library_at` fills it. The Foundation Classes count on it: `_autograph`'s Init
+    /// asks FILE("registry.vcx"), which finds it on the path, and then loads it by that name.
+    pub fn class_library_search(&self, name: &str) -> Vec<String> {
+        let name = name.trim();
+        let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
+        if file.contains('.') || file.is_empty() { self.search(name) } else { self.search(&format!("{name}.vcx")) }
+    }
+
     pub fn class_library_at(&self, name: &str) -> String {
         let name = name.trim();
         let file = name.rsplit(['/', '\\']).next().unwrap_or(name);

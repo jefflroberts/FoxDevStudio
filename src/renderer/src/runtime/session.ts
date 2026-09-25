@@ -1099,7 +1099,18 @@ export const useSessionStore = create<SessionState>((set, get) => {
               classLibraries.clear();
               return '';
             }
-            return classLibraries.set(request.files, request.alias, request.additive);
+            // SET CLASSLIB finds a library on the path as FILE() does - the Foundation Classes load
+            // registry.vcx by the bare name FILE() found - so a name the default directory has
+            // not got is the first path folder that has it, and stays the name it was when none has
+            const files = await Promise.all(
+              request.files.map(async (file, i) => {
+                const search = request.search?.[i] ?? [];
+                if (search.length === 0 || (await getApi().files.exists(at(file)).catch(() => false))) return file;
+                const found = await locate(at(file), search.map(at));
+                return found === at(file) ? file : found;
+              }),
+            );
+            return classLibraries.set(files, request.alias, request.additive);
           })();
 
         case 'CreateObject':

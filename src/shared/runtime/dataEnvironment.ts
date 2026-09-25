@@ -12,6 +12,7 @@
 import type { FormCursor } from '../form/schema';
 import { DATA_METHODS } from '../language/foxproMethods';
 import { CONTROL_DESCRIPTORS, OBJECT_DESCRIPTORS } from '../registry';
+import type { MemberEntry } from './objectModel';
 import { isCollection, type HostObject } from './oleObjects';
 import type { VmValue } from './values';
 
@@ -49,6 +50,15 @@ export class DataObject implements HostObject {
 
   set(name: string, value: VmValue): void {
     this.put(this.names.get(name.toUpperCase()) ?? name, value);
+  }
+
+  /** What AMEMBERS() lists: the values it holds, then what it can be asked to do. */
+  list(): MemberEntry[] {
+    const plain = { native: true, added: false, readOnly: false, changed: false };
+    return [
+      ...[...this.values.keys()].map((name): MemberEntry => ({ name, kind: 'Property', ...plain, value: this.get(name) as VmValue })),
+      ...[...METHODS].map((name): MemberEntry => ({ name, kind: 'Method', ...plain })),
+    ];
   }
 
   call(name: string, args: VmValue[]): VmValue | HostObject | Promise<VmValue> | undefined {
@@ -178,6 +188,15 @@ export class DataEnvironment extends DataObject {
     if (child) return child;
     if (name.toUpperCase() === 'COUNT' || name.toUpperCase() === 'CONTROLCOUNT') return this.cursors.length;
     return super.get(name);
+  }
+
+  /**
+   * Its cursors are objects in it, as a form's controls are in the form: the Wizards' buttons
+   * find a form's tables with `AMEMBERS(aMems, THISFORM.DataEnvironment, 2)`.
+   */
+  override list(): MemberEntry[] {
+    const plain = { native: true, added: false, readOnly: false, changed: false };
+    return [...super.list(), ...this.cursors.map((c): MemberEntry => ({ name: c.name.toUpperCase(), kind: 'Object', ...plain }))];
   }
 
   /** The cursor of that name, as `THISFORM.DataEnvironment.Cursor1` asks for it. */

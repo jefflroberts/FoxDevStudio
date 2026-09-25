@@ -284,6 +284,10 @@ pub enum HostRequest {
         alias: String,
         /// Keep the libraries already loaded and add to them.
         additive: bool,
+        /// For each file, where else it is to be looked for: the `SET PATH` folders, in order,
+        /// when the default directory does not have it.
+        #[serde(default)]
+        search: Vec<Vec<String>>,
     },
     /// The SQL pass-through functions: a connection to a data source, and what is asked of it.
     ///

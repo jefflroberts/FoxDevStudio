@@ -211,8 +211,8 @@ pub fn lookup(upper: &str) -> Option<(u16, &'static BuiltinSpec)> {
 ///
 /// FoxPro reads a function name by its first four letters: `ALLT()` is ALLTRIM, `TRANS()` is
 /// TRANSFORM, `PROG()` is PROGRAM, `EVAL()` is EVALUATE, `CREATE()` is CREATEOBJECT. A name that
-/// several functions could be short for is not resolved - the program has to say which - and a
-/// name shorter than four letters is only ever itself.
+/// several functions could be short for is not resolved - the program has to say which - unless
+/// it is one of [`ABBREVIATION_WINNERS`], and a name shorter than four letters is only ever itself.
 pub fn lookup_abbreviated(upper: &str) -> Option<(u16, &'static BuiltinSpec)> {
     if let Some(found) = lookup(upper) {
         return Some(found);
@@ -225,10 +225,15 @@ pub fn lookup_abbreviated(upper: &str) -> Option<(u16, &'static BuiltinSpec)> {
     let mut matches = reg[start..].iter().enumerate().take_while(|(_, s)| s.name.starts_with(upper));
     let (offset, spec) = matches.next()?;
     if matches.next().is_some() {
-        return None;
+        return ABBREVIATION_WINNERS.iter().find(|w| w.starts_with(upper)).and_then(|w| lookup(w));
     }
     Some(((start + offset) as u16, spec))
 }
+
+/// The function an abbreviation several could be short for means anyway. CREATEOBJECT is older
+/// than CREATEOBJECTEX, CREATEOFFLINE and CREATEBINARY, and keeps `CREATE()`: the Foundation
+/// Classes' own `_autograph.MSGraphCheck` makes its registry object with `create('FileReg')`.
+const ABBREVIATION_WINNERS: &[&str] = &["CREATEOBJECT"];
 
 pub fn by_id(id: u16) -> &'static BuiltinSpec {
     &registry()[id as usize]
