@@ -61,9 +61,7 @@ Solution/Coverage/CovPerfAddInfs.scx: Error 1734 in FRMSCOVPERF.SETSETS line 1: 
 Solution/Europa/MenuHit.scx: Error 1 in FRMSOLUTION1.CHECKSCRIPTS line 7: File 'foxcode.dbf' does not exist. (handled by the program)
 Solution/Europa/WindowsEvents.scx: Error 1429 in OLECONTROL1.INIT line 1: Olecontrol1 is an ActiveX control; this runtime cannot call into COM
 Solution/Ffc/agent.scx: Error 1733 in _AGENT.INIT line 2: Agent.Control.2 is not supported: Microsoft Agent was withdrawn from Windows after Vista and cannot be installed.
-Solution/Ffc/dataedit2.scx: Error 11 in PICFORMBTNS1.INITVARS line 26: Function argument value, type, or count is invalid.
 Solution/Ffc/datasort.scx: Error 1925 in _NAVTOOLBARCLASS1.INIT line 5: Unknown member FORMS.
-Solution/Ffc/error.scx: Error 1733 in FRMERROR.INIT line 11: Class definition _ERROR is not found.
 Solution/Ffc/newmenu.scx: Error 1925 in OMENU.SETMENU line 5: Unknown member ADDMENUBAR.
 Solution/Forms/Graphics/fdmain.scx: Error 1733 in FORMSET1.INIT line 6: Class definition FDTOOLBAR is not found.
 Solution/Forms/Graphics/graph.scx: Error 31 in FRMCONTROL.INIT line 15: Subscript is outside defined range
@@ -74,9 +72,9 @@ Solution/Ole/rtf.scx: Error 1925 in OLERTF.INIT line 1: Unknown member OBJECT.
 Solution/Ole/sysinfo.scx: Error 1925 in MAIN.CHECKSTATUS line 3: Unknown member ACSTATUS.
 Solution/Sedona/dvds.scx: Error 107 in FRMHOTTRACK.REFRESHDATA line 17: Operator/operand type mismatch.
 Solution/Tahoe/querydd.scx: Error 1925 in PGFDRAGSOURCES.PAGTHREE.OLECONTROL3.INIT line 3: Unknown member LISTITEMS.
-Solution/Toledo/caxml.scx: Error 107 in FORM1.INIT line 12: Operator/operand type mismatch. (handled by the program)
+Solution/Toledo/caxml.scx: Error 1925 in FORM1.INIT line 20: Unknown member CURSOR1. (handled by the program)
 Solution/Toledo/messenger.scx: Error 1733 in FRMSOLUTION1.INIT line 18: Messenger.UIAutomation.1 is not supported: Windows Messenger was shut down in 2013 and there is no service behind it. (handled by the program)
-Solution/Toledo/scattername.scx: Error 107 in FRMSOLUTION1.INIT line 4: Operator/operand type mismatch.
+Solution/Toledo/scattername.scx: Error 1733 in FRMSOLUTION1.INIT line 18: Class definition EMPTY is not found.
 Solution/Toledo/xmladapter.scx: Error 1429 in OWEBBROWSER.INIT line 1: oWebBrowser is an ActiveX control; this runtime cannot call into COM
 Solution/Toolbars/format.scx: Error 1925 in FORMSET1.INIT line 1: Unknown member TBREDITING.
 Solution/WinAPI/regfile.scx: Error 1733 in CMDCHECK.CLICK line 17: Class definition FILEREG is not found.

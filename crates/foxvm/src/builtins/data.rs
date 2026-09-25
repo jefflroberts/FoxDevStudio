@@ -811,6 +811,8 @@ fn f_cursorgetprop(c: &mut dyn BuiltinCtx, a: Vec<Value>) -> Result<BuiltinResul
     let rest = &a[1..];
     let value = match name.as_str() {
         "BUFFERING" => Value::number(on_cursor(c, rest, 1.0, |cur| f64::from(cur.buffering()))?),
+        // measured: 3 for a table and for a cursor alike; only a view is anything else
+        "SOURCETYPE" => Value::number(on_cursor(c, rest, 3.0, |_| 3.0)?),
         "SOURCENAME" | "DATABASE" => Value::str(on_cursor(c, rest, String::new(), |cur| cur.path.clone())?),
         "TABLES" => Value::str(on_cursor(c, rest, String::new(), |cur| cur.path.clone())?),
         "ALIAS" => Value::str(on_cursor(c, rest, String::new(), |cur| cur.alias.clone())?),
