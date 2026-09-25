@@ -668,6 +668,14 @@ export class RuntimeObject {
     }
     const upper = name.toUpperCase();
     if (this.isListControl && LIST_ARRAYS.has(upper)) {
+      // `Picture[0]` is every item's picture: the Foundation Classes' table mover clears its
+      // list and writes `lstTables.Picture[0] = ""` - "no bmp for tables" - with no item there
+      // at all. Read off that sample rather than measured.
+      if (upper === 'PICTURE' && at === 0) {
+        for (const each of this.items) each.picture = String(vmToProp(value) ?? '');
+        this.notify();
+        return;
+      }
       const item = this.items[at - 1];
       if (!item) throw new HostError(31, 'Subscript is outside defined range');
       if (upper === 'SELECTED') item.selected = value === true;
@@ -1995,7 +2003,7 @@ export class Desktop implements HostReads {
         added: target.wasAdded(name),
         readOnly: target.refusesWrite(name) !== undefined,
         changed: target.wasWritten(name),
-        value: this.getProp(obj, name),
+        value: this.readForListing(obj, name),
       });
     }
     const plain = { native: true, added: false, readOnly: false, changed: false };
@@ -2019,6 +2027,19 @@ export class Desktop implements HostReads {
       });
     }
     return out;
+  }
+
+  /**
+   * A property's value for a list of the object's members, or nothing when reading it refuses:
+   * a top-level form has a Parent that raises 1924 on a read, and AMEMBERS(a, THISFORM, 2) -
+   * how the Wizards' buttons look for a grid - still has to list the form.
+   */
+  private readForListing(obj: number, name: string): VmValue | undefined {
+    try {
+      return this.getProp(obj, name);
+    } catch {
+      return undefined;
+    }
   }
 
   /** Forms, and what was on them, that have been released; references to them read as .NULL. */
