@@ -86,6 +86,14 @@ describe('the Foundation Classes', () => {
     expect(printed()).toEqual(['2 BTN GRD']);
   });
 
+  it('answer CURSORGETPROP("SourceType") for a cursor', async () => {
+    // the Wizards' buttons ask it of every cursor in a form's data environment; measured, 3 for
+    // a table and a cursor alike
+    await run(['CREATE CURSOR cx (f1 N(2))', '? CURSORGETPROP("SourceType")', '? CURSORGETPROP("SourceType", "cx")']);
+    expect(errors()).toEqual([]);
+    expect(printed()).toEqual(['3', '3']);
+  });
+
   it("clear every item's picture of a list with Picture[0]", async () => {
     // the table mover clears its list and writes lstTables.Picture[0] = "" with nothing in it
     await run(['o = CREATEOBJECT("listbox")', 'o.Picture[0] = ""', 'o.AddItem("a")', 'o.Picture[0] = ""', '? "ok", o.ListCount']);
