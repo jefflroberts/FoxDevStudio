@@ -826,4 +826,13 @@ describe('DEFINE CLASS', () => {
     );
     expect(printedWords()).toEqual(['aerror 1 N 107 1 7']);
   });
+
+  it('gives an object the array elements its class body set', async () => {
+    // the golden class_array_elements.prg, whose .expected vfp9.exe wrote, run through the
+    // session: the Rust goldens' host kept the elements, and the session made them all .F.
+    const golden = 'crates/foxvm/tests/programs/class_array_elements';
+    await useSessionStore.getState().execute(source, readFileSync(`${golden}.prg`, 'utf8'));
+    const expected = readFileSync(`${golden}.expected`, 'utf8').trimEnd().split(/\r?\n/).map((l) => l.trim().replace(/ +/g, ' '));
+    expect(printedWords().filter((l) => l !== '')).toEqual(expected);
+  });
 });

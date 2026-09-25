@@ -1169,11 +1169,12 @@ export const useSessionStore = create<SessionState>((set, get) => {
               nonVisual: built.nonVisual,
               args: request.args,
             });
-            // `DIMENSION` in the class body: an array property the node tree could not carry
+            // `DIMENSION` in the class body: an array property the node tree could not carry, with
+            // what the body put in its elements - `a = "x"` or `a[1] = "one"`, .F. where nothing
             for (const array of built.arrays) {
               let owner: RuntimeObject | undefined = instance;
               for (const step of array.path) owner = owner?.child(step);
-              owner?.declareArray(array.name, array.values.length);
+              owner?.assignArray(array.name, { $arr: array.values, $cols: 0 });
             }
             // "Greet" belongs to the object; "image1.Click" belongs to that member
             const resolved = resolveInheritance(known, definition.name);
