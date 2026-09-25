@@ -138,23 +138,65 @@ the runtime.
 
 ## New machine setup (Intel Windows 11)
 
-The old machine was Windows on ARM64 under Parallels and needed workarounds (old notes under
-"Old machine quirks"). On an Intel machine try the plain route first:
+The user copies the app folders by hand and brings `C:\Users\jeffroberts\Projects\avbco-transfer`
+from the old machine: the registry exports and a README with the same list as here. Run
+`powershell -ExecutionPolicy Bypass -File handoff-tools\check-machine.ps1` from the repo root; it
+checks everything below and names what is missing (it passed 26/26 on the old machine).
 
-- Install Node 24, Rust (stable MSVC), Visual Studio Build Tools with the C++ workload, `gh`
-  (`gh auth login`), Python 3, and **Visual FoxPro 9** (for probes and samplesRun).
-- `npm install` should work without `--ignore-scripts`; `npm run check` may now run in full.
-- The COM addon (foxole) may build here, so `npm run dev` may work and `foxmedia.scx` may open.
-  If it does, it will show up in samplesRun as a line to remove from the known list.
-- Copy `C:\avbcodev` and `C:\CODEMINE` (the user is copying them by hand). The app's class
-  libraries also name `C:\fox\xsource\VFPSource\...` (Builders\wbpick.vcx,
-  Wizards\wzcommon\wizctrl.vcx) and the VFP install's `Ffc` and `Gallery`; bring `C:\fox\xsource`
-  too if it exists on the old machine.
-- The CodeMine registry state does not travel with the files. Either export the key on the old
-  machine and import it, or run the install dialog again with `AVBCO_INSTALL=1` (user's OK first):
-  - Key: `HKCU\Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Soft Classics\CodeMine`.
-  - Owner and organization: `na`. `SerialNumber`: `Serial-57517` (checked valid with vfp9.exe).
-  - `Paths\Local|Shared|Common`: `c:\avbcodev\data\`.
+**Folders, at the same paths** (class libraries name some by absolute path):
+- `C:\avbcodev` - the app (about 280 MB).
+- `C:\CODEMINE` - the framework, `common50\` and `custom\` (about 40 MB).
+- `C:\fox\xsource` - Microsoft's VFP source (26 MB). `Source\appmain.vcx` and `avbco.pjx` name
+  `C:\fox\xsource\VFPSource\builders\wbpick.vcx`, `...\Wizards\wzcommon\wizctrl.vcx`,
+  `builder.prg` and `wbmain.prg`. Nothing else under `C:\fox` (110 GB of other projects) is
+  needed; `C:\fox\Thor`, `shutter_data` and `10-15` appear only in `CMDBAK.prg`, a saved command
+  history.
+- Visual FoxPro 9 SP2 at `C:\Program Files (x86)\Microsoft Visual FoxPro 9`. FoxDev reads HOME()
+  from VFP's registry entry, the app uses its `Ffc`, `Gallery` and `Wizards`, and probes and
+  samplesRun need `vfp9.exe` and `Samples`.
+
+**Registry:** `reg import codemine-virtualstore.reg` (and `codemine-window-position.reg`) from the
+transfer folder, in a normal prompt. It restores the CodeMine registration (owner and organization
+`na`, the serial number, `Paths\Local|Shared|Common` = `c:\avbcodev\data\`) under
+`HKCU\Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Soft Classics\CodeMine`. It is
+there because CodeMine reads the registry from `codemine.fll`, which runs in FoxDev's 32-bit
+`fllhost.exe`, and Windows keeps a 32-bit program's `HKLM\SOFTWARE` writes in that VirtualStore.
+Without it the app shows its install dialog again (`AVBCO_INSTALL=1` drives it; user's OK first).
+Never put the serial number in the repo: the fork is public.
+
+**Repo:** clone the fork fresh; do not copy `node_modules` or `target` (ARM64 binaries).
+```
+git clone https://github.com/jefflroberts/FoxDevStudio.git && cd FoxDevStudio
+git remote rename origin fork
+git remote add origin https://github.com/FoxDevCommunity/FoxDevStudio
+git fetch --all && git checkout avbco-integration
+npm install && npm run build:wasm && npm run build:fllhost
+```
+
+**Tools:** Node 24, Rust stable (MSVC) with the `wasm32-unknown-unknown` target, Visual Studio
+Build Tools with "Desktop development with C++" (x86 and x64), Python 3, `gh` (`gh auth login`).
+
+### ARM64 to Intel: what changes
+
+Nothing in the repo is tied to ARM64: `rust-toolchain.toml` pins only the channel and the wasm
+target, `build-fllhost.mjs` builds x86 on any Windows, and the CI workflow picks its own arch.
+What changes is the machine setup:
+
+- Drop the old workarounds: no `RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc` prefix, no
+  `--ignore-scripts`, no hand-placed wasm-pack binary. Plain `npm install`, `cargo test -p foxvm`
+  and `npm run check` should work natively, and much faster (the wasm build took ~3 min and the
+  full TS suite ~18 min under emulation).
+- The COM addon (foxole) should build, so `npm run dev` works (no need for
+  `npx electron-vite dev`) and COM is live in tests. Expect samplesRun to change: `foxmedia.scx`
+  and other COM forms may get further and report different lines. Check each against main before
+  editing `samples-run-known.txt`; the reviewer's environment had no COM addon either.
+- `tests/win32/win32api.test.ts` crashed natively on ARM64; it should run on Intel. Stop
+  excluding it and see.
+- `DECLARE ... DLL` calls run in Electron's main process (koffi), 64-bit on both machines, so
+  registry views and API behavior do not change. FLLs run in the 32-bit `fllhost.exe` on both.
+- After the first native build, run the whole Rust and TS suites plus samplesRun once on
+  `avbco-integration` for a new baseline before changing anything; the 4 s per-form budget in
+  samplesRun may behave differently on a faster machine.
 
 ## General working notes
 
