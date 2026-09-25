@@ -1,19 +1,194 @@
 # Handoff: getting Shutter Ace (C:\avbcodev) to run in FoxDev Studio
 
-Last updated 2026-09-24 (second session). This file, `handoff-tools/` and
-`tests/zz-avbco-run.scratch.test.ts` are committed on `avbco-integration` only (the user committed
-them in `12ea0c6`). Keep them out of every topic branch and pull request.
+Last updated 2026-09-25 (third session), at the move from the ARM64 Parallels machine to an Intel
+Windows 11 machine. This file, `handoff-tools/` and `tests/zz-avbco-run.scratch.test.ts` are
+committed on `avbco-integration` only. Keep them out of every topic branch and pull request.
+
+Claude's own memory notes lived in `~/.claude/projects/.../memory/` on the old machine and do not
+travel. Everything they held that matters is in this file.
 
 ## Resuming (do this first)
 
 1. Read this file through.
-2. `git checkout avbco-integration` and confirm HEAD is the handoff commit on top of `8dbf473`.
-3. `gh pr list -R FoxDevCommunity/FoxDevStudio --state all` and check each PR's reviews and inline
-   comments (`gh api repos/FoxDevCommunity/FoxDevStudio/pulls/<n>/reviews` and `/comments`). Report
-   merges and comments; do not reply without asking.
-4. Rebuild before running anything: `npm run build:wasm` (the generated wasm is not committed).
-5. Ask the user about the pending PR split below before cutting or opening anything.
-6. Then carry on from "Where the run stands".
+2. Set up the new machine: see "New machine setup" below.
+3. `git fetch fork` and `git checkout avbco-integration`; HEAD should be the handoff commit of
+   2026-09-25. Also fetch `fork/runtime-classes-next` (see "Where #6 stands").
+4. `gh pr list -R FoxDevCommunity/FoxDevStudio --state all` and check each open PR's reviews and
+   inline comments (`gh api repos/FoxDevCommunity/FoxDevStudio/pulls/<n>/reviews` and `/comments`).
+   Report merges and comments to the user; do not reply without asking.
+5. Rebuild before running anything: `npm run build:wasm` (the generated wasm is not committed) and
+   `npm run build:fllhost`.
+6. Then pick up "Next steps".
+
+## Next steps (in order)
+
+1. **Finish #6.** The fixes it needs are on `runtime-classes-next` in the fork, not yet on
+   `runtime-classes` (the PR's branch). See "Where #6 stands". Before pushing:
+   - Answer the `frmMember.scx` question: in VFP 9, `o = CREATEOBJECT("form")` then
+     `? VARTYPE(o.vParent)` - does it print `U` or raise an error (1925)? The user may run it, or
+     measure it with `node scripts/vfp-expected.mjs --probe` if VFP is on the new machine. Implement
+     what it does; frmMember's cboChoices1.InteractiveChange does `IF VARTYPE(.vParent)=="O"` inside
+     `WITH ThisForm`.
+   - Re-run samplesRun on the branch (see "Sample forms").
+   - Then `git push --force-with-lease=runtime-classes:fork/runtime-classes fork runtime-classes-next:runtime-classes`
+     (or reset `runtime-classes` to it first), and post a comment on #6 - the user approves its text
+     first. It should say: DODEFAULT now running parent code made Foundation Class sample forms
+     reach code they never ran on main; what was fixed (listed below); and the frmMember outcome.
+2. **Rebase #8** (`fll-references`) onto the new #6 and push it to the fork; comment only with
+   approval.
+3. **PR the class-body array fix** (`c587cc1` on `avbco-integration`): main has the same bug. Cut a
+   topic branch off `main`; the test in `defineClass.test.ts` uses a `printedWords` helper that
+   main's copy of the file lacks, so adapt it. Show the user the PR text first.
+4. **Follow-up promised on #7:** time a property-heavy loop before and after #7 (every property read
+   now makes a `has_code_method` host call). If it shows, a per-object flag set once by the host.
+5. **The pending batch split** (below), then back to the Shutter Ace run ("Where the run stands").
+
+## Rules the user set
+
+- **Measure first.** Measure in VFP 9 before writing behavior:
+  `node scripts/vfp-expected.mjs --probe file.prg` for a question, or a golden in
+  `crates/foxvm/tests/programs` (its `.expected` written by `node scripts/vfp-expected.mjs <file>.prg`).
+  When something is inferred from Microsoft's own code instead of measured, say so in the comment.
+  Probes must not name a helper `log` (collides with `LOG()`), a variable `f` (`f.x` is a field of
+  work area F) or a routine `Show` (the SHOW command).
+- **Probe output gotchas:**
+  - The wrapper runs `main` with `DO`, so `PROGRAM(-1)` is 2 in main. Goldens cannot pin
+    absolute levels; put level limits in unit tests.
+  - After an error has been raised (inside or after a CATCH, in an ON ERROR handler), VFP spaces the
+    items of a `?` list differently. Print one concatenated string in goldens.
+- **Keep `C:\avbcodev` and its data untouched.** Registry writes only with the user's OK.
+- **GitHub.**
+  - The maintainer (RandomChirp) welcomes PRs; the user chose topic-sized PRs off `main`.
+  - Push only to the `fork` remote (`jefflroberts/FoxDevStudio`). Force-pushing there is fine, with
+    `--force-with-lease`. Never push to `origin` (FoxDevCommunity).
+  - Every PR comment, issue and PR body is shown to the user and approved before it is posted.
+  - New work lands on `avbco-integration` first, then goes to a topic branch and PR.
+- **Commits.** End commit messages with
+  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`; PR bodies end with the Claude Code line.
+
+## Branches and pull requests (2026-09-25)
+
+| Branch | PR | State |
+|---|---|---|
+| `sql-forms-real-apps` | #2 | Merged |
+| `set-procedure` | #5 | Merged |
+| `language-forms` | #9 | Merged |
+| `select-clause-order` | #10 | Merged |
+| `startup-environment` | #11 | Merged |
+| `runtime-classes` | #6 | Open. Review fixes pushed and answered 2026-09-24/25; **more fixes waiting on `runtime-classes-next`** |
+| `screen-and-objects` | #7 | Open. Array Access fix pushed and answered; awaiting re-review |
+| `fll-references` | #8 | Open. Rebased on #6's first round of fixes; needs rebasing again after #6 |
+| `runtime-classes-next` | none | #6 plus the sample-form fixes; becomes `runtime-classes` once finished |
+| `avbco-integration` | none | Working branch: everything together, plus the unsplit batch |
+
+What the reviews asked and what was done:
+- #6: the Error-method skip applies only when the program called Error; when the runtime called it,
+  an error inside goes to the default handler and ON ERROR is not asked (gated on `in_class_error`).
+  Dead `Instr::DoDefault` removed.
+- #7: an array property's Access method gets the subscript (`GetMemberIndex`); `ALEN` reads the
+  array past it (`GetProp`); `obj.aProp("x")` calls Access with "x"; the whole array named calls it
+  with 1.
+- #8: waited on #6, then a rebase.
+- #9 review note (not blocking): SYS(2007) takes the low byte of each char; a comment would help.
+- #10 note: `_TALLY` for INSERT/UPDATE/DELETE is a later PR.
+
+## Where #6 stands
+
+The reviewer ran samplesRun on #7, not on #6. With DODEFAULT working, Foundation Class sample forms
+run parent-class code that main never ran, and five of them (automate, graphrec, dataedit, movers,
+frmMember) stopped where main opens them. `runtime-classes-next` = `runtime-classes` + three commits:
+
+- `f3c8179`: SET CLASSLIB searches SET PATH as FILE() does (`LoadClassLib.search`); `CREATE()` is
+  CREATEOBJECT despite the shared prefix (`ABBREVIATION_WINNERS`); assigning a value to an array
+  variable fills every element (`write_through`); a 1-D array answers `[row, 1]`; a data
+  environment lists its cursors for AMEMBERS (`DataObject.list`); the in-memory file API lists a
+  folder whatever its case.
+- `fd48f30`: AMEMBERS on a top-level form (its Parent refuses a read; `readForListing`); a list's
+  `Picture[0]` sets every item's picture (inferred from the table mover, not measured);
+  `tests/runtime/foundationClassForms.test.ts`.
+- `fb51014`: CURSORGETPROP("SourceType") = 3 (measured, carried from `8dbf473`); the in-memory
+  file API grows a table written past its end (carried from `8dbf473`; without it scattername.scx
+  loops for ever and the test process runs out of memory); `samples-run-known.txt` updated.
+
+Verified on that branch: 674 Rust tests, 556 vitest tests, typecheck and lint clean, and samplesRun
+(all 160 forms timed) matching its known list except `foxmedia.scx` (needs the COM addon) and
+`frmMember.scx` (the open question).
+
+The same fixes are on `avbco-integration` as `a8b95f7`, `a91350b`, `c8700c2`. When the batch below
+is split, leave them out: they go with #6.
+
+## Sample forms (tests/vfp/samplesRun.test.ts)
+
+Opens every `.scx` under `Samples\Solution` (needs VFP 9 installed at
+`C:\Program Files (x86)\Microsoft Visual FoxPro 9`) and fails on any complaint not listed in
+`tests/vfp/samples-run-known.txt`. CI cannot run it, so run it before pushing anything that touches
+the runtime.
+
+- `RUN_REPORT=<file>` writes every complaint; diff it against the known list (sorted, without `#`
+  lines) with `comm`.
+- `RUN_ONLY=<stem>` opens one form; `RUN_TIMES=1` prints each form's time.
+- A full run is 160 forms in about 140 s. **Count the timed forms**: a crashed run leaves the
+  later forms silent, which looks like "they open now" in a report diff.
+- Each form gets 4 s; forms that need COM, a modal or READ EVENTS use it all.
+- To read a class library's code, use the VM's reader from a scratch vitest file:
+  `vm.read_dbf(bytes, memo)` on the `.vcx`/`.vct` (fields OBJNAME, CLASS, PARENT, METHODS). Raw
+  greps of a `.vct` pick up stale memo blocks.
+- On `avbco-integration`, samplesRun differs from main's list by: aa_fun (#7 is not merged there),
+  foxmedia (COM), caxml and scattername (stop later), frmMember (open question).
+
+## New machine setup (Intel Windows 11)
+
+The old machine was Windows on ARM64 under Parallels and needed workarounds (old notes under
+"Old machine quirks"). On an Intel machine try the plain route first:
+
+- Install Node 24, Rust (stable MSVC), Visual Studio Build Tools with the C++ workload, `gh`
+  (`gh auth login`), Python 3, and **Visual FoxPro 9** (for probes and samplesRun).
+- `npm install` should work without `--ignore-scripts`; `npm run check` may now run in full.
+- The COM addon (foxole) may build here, so `npm run dev` may work and `foxmedia.scx` may open.
+  If it does, it will show up in samplesRun as a line to remove from the known list.
+- Copy `C:\avbcodev` and `C:\CODEMINE` (the user is copying them by hand). The app's class
+  libraries also name `C:\fox\xsource\VFPSource\...` (Builders\wbpick.vcx,
+  Wizards\wzcommon\wizctrl.vcx) and the VFP install's `Ffc` and `Gallery`; bring `C:\fox\xsource`
+  too if it exists on the old machine.
+- The CodeMine registry state does not travel with the files. Either export the key on the old
+  machine and import it, or run the install dialog again with `AVBCO_INSTALL=1` (user's OK first):
+  - Key: `HKCU\Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Soft Classics\CodeMine`.
+  - Owner and organization: `na`. `SerialNumber`: `Serial-57517` (checked valid with vfp9.exe).
+  - `Paths\Local|Shared|Common`: `c:\avbcodev\data\`.
+
+## General working notes
+
+- **Never run `cargo fmt` wholesale.** It reformats ~70 files in this repo. Tidy by hand.
+- **The Bash tool collapses `\\` to `\` inside heredocs.** A Python edit written in a heredoc turns
+  `'\\n'` into a real newline. Build such strings with `chr(92)` or `String.fromCharCode(10)`, or
+  use the Edit tool.
+- Vitest swallows `console.log`; write probe output to a file.
+- A test binary built in a removed worktree keeps that worktree's `CARGO_MANIFEST_DIR` and fails to
+  find its fixtures. `touch crates/foxvm/tests/*.rs crates/foxvm/src/lib.rs` rebuilds it.
+- A vitest run stuck in a loop ignores `timeout`. Stop it from PowerShell:
+  `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | ? CommandLine -match vitest | % { Stop-Process -Id $_.ProcessId -Force }`.
+- Write files with LF line endings (`newline=''` in Python).
+- Full TS suite: `npx vitest run --exclude "tests/zz-*" --exclude tests/vfp/samplesRun.test.ts`
+  (on ARM64 also `--exclude tests/win32/win32api.test.ts`, which crashed natively there). Running
+  the whole suite without excluding `tests/zz-*` runs the Shutter Ace harness, which writes
+  `avbco-run-report.txt` into the repo root unless `AVBCO_REPORT` points elsewhere.
+- Last green runs (2026-09-25): `avbco-integration` 595 vitest tests (one more added since, run on its own), 679 Rust tests.
+- **Before a PR, also run** `npx vitest run tests/reference` (if it fails,
+  `REGEN_DOCS=1 npx vitest run tests/reference/coverage.test.ts`), `npm run argforms:check` and
+  samplesRun.
+- In a scratch `git worktree`: junction `node_modules` to this checkout's
+  (`cmd /c mklink /J ..\wt\node_modules node_modules`) and remove the junction alone
+  (`[System.IO.Directory]::Delete(path, $false)` or `cmd /c rmdir`) before `git worktree remove`,
+  or the removal deletes the real `node_modules` through it. Set `CARGO_TARGET_DIR` to reuse a build.
+
+## Old machine quirks (Windows on ARM64, under Parallels)
+
+- Every build or test needed
+  `export PATH="/c/Program Files/nodejs:$USERPROFILE/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc`;
+  `cargo test -p foxvm` worked with that toolchain.
+- `npm install --ignore-scripts`, plus the x86_64 wasm-pack exe dropped into
+  `node_modules/wasm-pack/binary/`. The COM addon could not build, so the IDE ran with
+  `npx electron-vite dev`.
 
 ## Pending decision: splitting the `ecf424b..8dbf473` batch
 
@@ -25,8 +200,11 @@ or opened. Topic branches off `main`:
 | `evaluate-inline` | EVALUATE as an inline frame; carrying on after an error in a macro, EVALUATE or ON ERROR handler (`rest_after_error`) | `main` |
 | `method-errors` | Errors reaching a TRY in the caller (`caller`/`passing`, `PassedError`, `Vm::step` keeping the fiber), the 103 limit, Exception.Procedure / Error cMethod spelling, host read errors (`$hostError`), PROGRAM()/LINENO() inside ON ERROR | #6, then `evaluate-inline` |
 | `library-objects` | DODEFAULT via `codeOwner()`, AddObject of library classes, Load only for visual objects, Empty/SCATTER NAME, array functions filling a property (compiler write-back, `assignArray`), property expressions (`headerDefines.ts`, NULL, THIS, quiet TRY); the regenerated `fdvclasses.vcx` with `fdvkid` | #6 |
-| `data-commands` | SKIP IN expr, SET RELATION forms, CURSORGETPROP SourceType/Database (+ backlink), GETFLDSTATE, empty-table index, FULLPATH/OPEN DATABASE on SET PATH, `data\` paths, project-folder FileOp paths, memory API growth + 2091 guard, MEMOWIDTH, SET CENTURY | `main` |
+| `data-commands` | SKIP IN expr, SET RELATION forms, CURSORGETPROP Database (+ backlink), GETFLDSTATE, empty-table index, FULLPATH/OPEN DATABASE on SET PATH, `data\` paths, project-folder FileOp paths, 2091 guard, MEMOWIDTH, SET CENTURY | `main` |
 | `names-at-run-time` | VARTYPE (`NameDefined`), macro before a subscript, macro standing for arguments, MLINE/`_MLINE`, SYS(16, n) | `main` |
+
+CURSORGETPROP SourceType and the memory API growth moved to #6 (above); leave them out of
+`data-commands`.
 
 Notes for the split:
 - `vm.rs`, `session.ts`, `compiler.rs` and `parser.rs` carry hunks for several topics; assign by
@@ -36,9 +214,14 @@ Notes for the split:
 - Some old tests were changed on purpose to match measurements: `builtins_system.rs` (EVALUATE
   contract, SYS(16) `.FXP`), `macros.rs` (SYS(16) shape), `defineClass.test.ts` (Error cMethod
   `proc2`). They go with the topic that changed the behavior.
-- Build and run the full Rust and TS suites in each worktree, plus `tests/reference` and
-  `npm run argforms:check`, before opening a PR. PR bodies end with the Claude Code line.
-- After the split, the next split point becomes `8dbf473` (or the handoff commit after it).
+- Build and run the full Rust and TS suites and samplesRun in each worktree, plus `tests/reference`
+  and `npm run argforms:check`, before opening a PR.
+
+How to cut a batch into a topic branch:
+1. `git diff <last-split-point> HEAD > all.patch`. The last split point is `ecf424b`.
+2. `python handoff-tools/hunks.py list all.patch` to number the hunks.
+3. Write a topics JSON, then `hunks.py write` to make one patch per topic.
+4. Apply each patch in a scratch `git worktree` on `main`, build it, and test it.
 
 ## Goal
 
@@ -46,89 +229,11 @@ Make `C:\avbcodev\avbco.pjx` (Shutter Ace / ShutterDesign II, a 60k-line Visual 
 the CodeMine framework at `C:\CODEMINE`) run under FoxDev Studio, fixing FoxDev wherever it falls
 short. Every language behavior is measured against the real `vfp9.exe` first.
 
-## Rules the user set
-
-- **Measure first.** Measure in VFP 9 before writing behavior:
-  `node scripts/vfp-expected.mjs --probe file.prg` for a question, or a golden in
-  `crates/foxvm/tests/programs` (its `.expected` written by `node scripts/vfp-expected.mjs <file>.prg`).
-  Probes must not name a helper `log` (collides with `LOG()`), a variable `f` (`f.x` is a field of
-  work area F) or a routine `Show` (the SHOW command).
-- **Probe output gotchas:**
-  - The wrapper runs `main` with `DO`, so `PROGRAM(-1)` is 2 in main. Goldens cannot pin
-    absolute levels; put level limits in unit tests.
-  - After an error has been raised (inside or after a CATCH, in an ON ERROR handler), VFP spaces the
-    items of a `?` list differently. Print one concatenated string in goldens.
-- **Keep `C:\avbcodev` and its data untouched.** The registry values the install dialog wrote were
-  written with the user's OK.
-- **GitHub.** The maintainer welcomes pull requests ("Please keep them coming!" on #2). The user
-  chose topic-sized PRs off `main`. Confirm before opening issues or posting comments.
-- **Commits.** End commit messages with
-  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`; PR bodies end with the Claude Code line.
-
-## Machine quirks (Windows on ARM64, under Parallels)
-
-- In Bash, prefix every build or test:
-  `export PATH="/c/Program Files/nodejs:$USERPROFILE/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc`
-- After any Rust change: `npm run build:wasm`. After any change to `native/fllhost/fllhost.c`:
-  `npm run build:fllhost` (it also builds the test libraries in `tests/fll/build`).
-- Launch the IDE with `npx electron-vite dev`, not `npm run dev` (the COM addon can't build here).
-  `npm install` needs `--ignore-scripts`.
-- **Never run `cargo fmt` wholesale.** It reformats ~70 files in this repo. Tidy by hand.
-- **The Bash tool collapses `\\` to `\` inside heredocs.** A Python edit written in a heredoc turns
-  `'\\n'` into a real newline and `\\f` into a form feed. Build such strings with `chr(92)`, or
-  write the script to a file first.
-- A test binary built in a removed worktree keeps that worktree's `CARGO_MANIFEST_DIR` and fails to
-  find its fixtures. `touch crates/foxvm/tests/*.rs crates/foxvm/src/lib.rs` rebuilds it.
-- A vitest run stuck in a synchronous loop ignores `timeout`. Stop it from PowerShell:
-  `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | ? CommandLine -match vitest | % { Stop-Process -Id $_.ProcessId -Force }`.
-  Stop leftovers before starting another harness run, or two runs write one stream file.
-- Write files with LF line endings. A Python `open(p, 'w')` on Windows writes CRLF; use
-  `newline=''` (or `'\n'`).
-- **The full TS suite takes ~18 min.** Two files fail identically on untouched code, so exclude them:
-  `npx vitest run --exclude "tests/zz-*" --exclude tests/vfp/samplesRun.test.ts --exclude tests/win32/win32api.test.ts`.
-  - `win32api` crashes natively on ARM64.
-  - `samplesRun` runs out of heap on `Solution/Toledo/scattername.scx`, which never finishes (not
-    investigated).
-  - The last full run was green: 89 files, 588 tests (5 skipped). Rust: 679 tests (`cargo test -p foxvm`).
-- **Before a PR, also run:**
-  - `npx vitest run tests/reference`. If it fails, regenerate the coverage doc with
-    `REGEN_DOCS=1 npx vitest run tests/reference/coverage.test.ts`.
-  - `npm run argforms:check`.
-
-## Branches and pull requests
-
-| Branch | PR | Holds |
-|---|---|---|
-| `sql-forms-real-apps` | #2 | Five SQL/name forms |
-| `set-procedure` | #5 | SET PROCEDURE, `DO name+"x"` (fixes #1, closes #3) |
-| `runtime-classes` | #6 | DODEFAULT, Error methods, @var, class library search, importer inheritance |
-| `screen-and-objects` | #7 | Access/Assign, _SCREEN/_VFP, released forms, FOR EACH over Forms |
-| `fll-references` | #8 | FLL reference parameters, integer wrap (on top of #6) |
-| `language-forms` | #9 | Class property expressions, class-body arrays, SYS(2007), SET words |
-| `select-clause-order` | #10 | SELECT clauses in any order, _TALLY (on top of #2) |
-| `startup-environment` | #11 | VERSION(2), SET LIBRARY paths, POPUP(), #INCLUDE loops |
-| `avbco-integration` | none | **Current working branch.** All of the above together, plus the batch after `ecf424b` (not yet split). |
-
-New work goes on `avbco-integration` first. When a batch is done, cut it into a topic branch off
-`main`:
-1. `git diff <last-split-point> HEAD > all.patch`. The last split point is `ecf424b`.
-2. `python handoff-tools/hunks.py list all.patch` to number the hunks.
-3. Write a topics JSON, then `hunks.py write` to make one patch per topic.
-4. Apply each patch in a scratch `git worktree` on `main`, build it, and test it.
-
-In the worktree:
-- Junction `node_modules` to this checkout's, and remove the junction with `cmd /c rmdir` before
-  `git worktree remove`, or the removal deletes the real `node_modules` through it.
-- Set `CARGO_TARGET_DIR` to this checkout's `target` to reuse the build.
-
-Check PR state with `gh pr list -R FoxDevCommunity/FoxDevStudio`. If a PR is merged or reviewed,
-rebase or answer as needed; a merged #6 or #2 makes #8 or #10 show only their own commit.
-
 ## How to run it
 
 **IDE:**
 1. `git checkout avbco-integration`, `npm run build:wasm`, `npm run build:fllhost`.
-2. `npx electron-vite dev`.
+2. `npm run dev` (on the old machine: `npx electron-vite dev`).
 3. Open `C:\avbcodev\avbco.fxproject` and press F5.
 
 The IDE really writes files, so saved data goes into `C:\avbcodev\data`.
@@ -152,27 +257,22 @@ R=<report file>; AVBCO_REPORT="$R" AVBCO_MAX_ERRORS=10 npx vitest run tests/zz-a
 - Output lines contain CR from `CHR(13)`; pipe through `tr '\r' '|'`.
 - "recursive use of an object ... unsafe aliasing" means an earlier wasm call trapped; find the
   first failure.
-- `tests/zz-eval.scratch.test.ts` (untracked, never commit) runs small programs through the real
-  session and prints their output: edit its `cases` object. Handy for checking FoxDev against a
-  VFP probe. Note that it installs `__avbcoStep` only if the scheduler still calls that hook,
-  which it no longer does.
+- `tests/zz-eval.scratch.test.ts` (untracked on the old machine, never committed, so it is not on
+  the new one) ran small programs through the real session. Recreate a scratch file like it when
+  needed: `useSessionStore.getState().execute(source, text)`, then read `output`; wait for
+  `errorReport` instead of awaiting when a program may stop at the error dialog.
 - `python handoff-tools/find_app.py <class> [method]` prints CodeMine source from the imported
-  `.fxc` JSON, whole methods now (`FIND_APP_LINES` caps it).
+  `.fxc` JSON, whole methods (`FIND_APP_LINES` caps it).
 - The CodeMine `.fxc` files are stale (written before the importer kept ancestor copies). The
   runtime does not read `.fxc` at all; it imports each `.vcx` when `SET CLASSLIB` loads it.
 
-**Registry state** (written by the install dialog with the user's OK):
-- Key: `HKCU\Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Soft Classics\CodeMine`.
-- Owner and organization: `na`.
-- `SerialNumber`: `Serial-57517`, checked valid with vfp9.exe.
-- `Paths\Local|Shared|Common`: `c:\avbcodev\data\` (where the required files are).
-- Deleting `SerialNumber` brings the install dialog back.
-
 ## Where the run stands
 
-`appApplication.Start` now gets through `CreateGlobalObjects` and `AfterCreateGlobalObjects`, and
-the main menu is installed (`menu: installed` in the report). The run then ends `idle` instead of
-parking in `READ EVENTS`. Next errors, in order (from `AVBCO_TRACE=1 AVBCO_STREAM=...`):
+`appApplication.Start` gets through `CreateGlobalObjects` and `AfterCreateGlobalObjects`, and the
+main menu is installed (`menu: installed` in the report). The run then ends `idle` instead of
+parking in `READ EVENTS`. Next errors, in order (from `AVBCO_TRACE=1 AVBCO_STREAM=...`), as of the
+second session (this session worked on PRs and sample forms, not on the app run; re-run the harness
+first, since the sample-form fixes may change what it meets):
 
 1. `CHKTOOLLAUNCHBUTTON1.SHOWCONTROL` line 6: unknown member `OAPP`. A toolbar button reads `oApp`
    off something that lacks it; find what `THIS`/`THISFORM` is there.
@@ -184,32 +284,19 @@ parking in `READ EVENTS`. Next errors, in order (from `AVBCO_TRACE=1 AVBCO_STREA
 4. Find why `READ EVENTS` is never reached (`BeforeMenu`, `ShowMenu`, `OpenAppToolbars`,
    `BeforeReadEvents`).
 
-Fixed this session, in the order the run met them:
-- EVALUATE() of a method call (cmEvent.Subscribe): EVALUATE runs as an inline frame, like `&macro`.
-- Errors inside a called method reach a TRY in the caller (fibers know their caller).
-- DODEFAULT() from a library object added into another object (cmRegistry.Init) ran nothing.
-- Runaway recursion overflowed the JS stack and poisoned the VM ("recursive use of an object");
-  now it is VFP's error 103 at level 127 (126 for a method).
-- VARTYPE() of an undefined name, TYPE() of `o.Parent`, `SKIP ... IN o.cWorkarea`,
-  `DIMENSION &name[n]`, SET MEMOWIDTH up to 8192, SET CENTURY TO (expr) ROLLOVER (expr),
-  `SET RELATION OFF INTO (x) IN (y)`, a macro standing for several arguments (`f(&cList)`).
-- CURSORGETPROP SourceType and Database, GETFLDSTATE(-1) and the field states, a numeric index
-  built on an empty table, FULLPATH and OPEN DATABASE along SET PATH, relative file names in the
-  project folder, `CREATE DATABASE data\x` (`data` read as DATABASE).
-- MLINE offsets and `_MLINE`, SYS(16, n), PROGRAM() and LINENO() inside ON ERROR.
-- Carrying on after an error inside a macro, EVALUATE or ON ERROR handler looped on "Stack
-  underflow".
-- The memory API dropped appended records, and reads then looped for ever.
-- SCATTER NAME (Empty objects), AERROR and the other array functions into a property, AddObject
-  of a library class, Load no longer fired for non-visual classes, class property expressions
-  (header constants, `(NULL)`, THIS, and failures kept away from the program's ON ERROR).
-
-**Estimate given to the user:** unchanged in shape. The menu is up; getting into READ EVENTS is
-probably one or two sessions. Common screens (CodeMine's data manager, views, buffering) come after.
+**Estimate given to the user:** getting into READ EVENTS is probably one or two sessions. Common
+screens (CodeMine's data manager, views, buffering) come after.
 
 ## Known gaps recorded, not fixed
 
 Runtime behaviors that differ from VFP:
+- `VARTYPE()` of a missing property (frmMember.scx): U or error? Not measured yet (Next steps 1).
+- `SCATTER NAME thisform ADDITIVE` is not implemented (scattername.scx: 1930 on
+  `avbco-integration`, "Class definition EMPTY" on #6).
+- An array property with `SET COMPATIBLE ON` should be replaced by a scalar on assignment; the new
+  fill-every-element rule ignores COMPATIBLE.
+- Only CREATEOBJECT is listed in `ABBREVIATION_WINNERS`; other ambiguous four-letter abbreviations
+  (SUBS, STRT, ...) still refuse. Add them when a program needs them, with evidence.
 - SYS(16) gives the module name with `.FXP` but no folder (VFP: `C:\PATH\FILE.FXP`); the VM does not
   know each module's file. PROGRAM(n) and SYS(16, n) see only the running fiber's frames, so inside
   a method they start again at 1.
@@ -218,16 +305,13 @@ Runtime behaviors that differ from VFP:
 - After an error, VFP prints `?` list items and numbers with extra spaces; not implemented.
 - CREATE TABLE inside a database writes no backlink, so CURSORGETPROP("Database") of a table made
   here is empty; tables made by VFP are read correctly.
-- DBC() and FULLPATH answer relative paths when SET DEFAULT has not been set (the project folder is
-  implied).
+- DBC() and FULLPATH answer relative paths when SET DEFAULT has not been set.
 - A form's own property expressions (DO FORM) are still worked out without its header's constants;
   library classes have them.
-- The quiet evaluator (`evaluate_in`, used for DEFINE CLASS property expressions and the debugger)
-  still cannot suspend.
-- Reading a reopened table in the session hung before the memory API fix; the VM now raises 2091
-  on a page that comes back short (the wording is a guard, not measured).
+- The quiet evaluator (`evaluate_in`) still cannot suspend.
+- The VM raises 2091 on a table page that comes back short (the wording is a guard, not measured).
 - The checked-in `ref_object.expected` says `PROGRAM(-1)` is 1 in main; VFP under the golden wrapper
-  says 2 (`node scripts/vfp-expected.mjs --check`). Not changed.
+  says 2. Not changed.
 - A DEFINE CLASS property expression calling a program's own function is evaluated here; VFP
   refuses it (error 31).
 - Class-body arrays keep only their first dimension; `a[2,2] = x` is skipped with a warning.
@@ -246,32 +330,31 @@ Importer and IDE:
 - The importer writes `.fxc` files beside libraries outside the project (e.g. into `C:\codemine`)
   and fails with EPERM under Program Files.
 
-Tests:
-- `Toledo/scattername.scx` never finishes in `samplesRun`.
-
 ## Design notes worth keeping
 
 - **DODEFAULT.** The importer keeps overridden `.vcx` methods as `Name#1`, `Name#2` (nearest
   ancestor first), each compiled with its own class's header. The VM sends the running method's
   full compiled name in `CallParentMethod.from`. The session runs `Name#n+1`, or walks DEFINE CLASS
   parents from the writing class, answering .T. when nothing is above.
-- **Access/Assign.** Handled in the VM's GetMember, LoadField and SetMember through the optional
-  host read `hasCodeMethod`. Inside `Prop_Access`/`Prop_Assign`, `THIS.Prop` is the property itself.
+- **Access/Assign.** Handled in the VM's GetMember, GetMemberIndex, LoadField, CallMethod and
+  SetMember through the optional host read `hasCodeMethod`. Inside `Prop_Access`/`Prop_Assign`,
+  `THIS.Prop` is the property itself.
+- **Error methods.** `in_class_error` holds an object while the runtime runs its Error method; an
+  error inside is skipped only when the program called Error.
 - **FLL references.** The wire tag `R` wraps a referenced argument; fllhost hands the library a
   Locator and serves `_Load` (30) and `_Store` (29). Stored values come back in the reply and
   `wasm.rs` writes them into the `Value::Ref` cells.
 - **Class property expressions.** Kept as source (`ClassProto.expressions`), collected by
-  `buildClassInstance`, and evaluated by `workOutProperties` in the caller's frame
-  (`vm.evaluateIn(ctx.fiber, -1, ...)`).
+  `buildClassInstance`, and evaluated by `workOutProperties` in the caller's frame.
+- **Class-body arrays.** Folded into a `Constant::Array` by the compiler; the session gives the
+  object those values with `assignArray` (`c587cc1`; before it every element was .F.).
 - **Errors across fibers.** A method runs as a fiber of its own. The scheduler tells the VM which
-  fiber a new one was started for (`setCaller`, from the fibers whose requests are being
-  performed). An error nothing in the method handles (no TRY, no Error method) is marked `passes`
-  when a TRY waits in a caller; the scheduler ends the method fiber (`passError`) and unwinds the
-  JS stack with `PassedError` to the caller's drive loop, where the VM has already raised the error.
+  fiber a new one was started for (`setCaller`). An error nothing in the method handles is marked
+  `passes` when a TRY waits in a caller; the scheduler ends the method fiber (`passError`) and
+  unwinds the JS stack with `PassedError` to the caller's drive loop.
 - **Nesting limit.** `Vm::level` counts frames across the caller chain; a call past 127 (a method
-  past 126) raises 103. This is also what keeps runaway recursion from overflowing the JS stack.
+  past 126) raises 103.
 - **EVALUATE** returns `BuiltinResult::Evaluate`; the VM compiles the text as an inline frame of
   the calling routine, exactly as `&expr`.
 - **Host read errors.** `getProp`/`getMember` answer `{ $hostError, message }` for a HostError, and
-  the VM raises it where the read was, instead of the bridge rethrowing after the call.
-- Memory notes for Claude live in `~/.claude/projects/C--Users-jeffroberts-Projects-FoxDevStudio/memory/`.
+  the VM raises it where the read was.
