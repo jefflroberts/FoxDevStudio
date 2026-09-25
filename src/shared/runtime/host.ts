@@ -90,7 +90,7 @@ export type HostRequest =
   | { kind: 'DoForm'; name: string; args: VmValue[]; modal: boolean | null; linked: boolean; noshow: boolean; want_object: boolean; want_result: boolean }
   | { kind: 'ReleaseObject'; obj: number }
   | { kind: 'CreateObject'; class: string; args: VmValue[]; definition?: VfpClassDef | null; module?: string }
-  | { kind: 'LoadClassLib'; files: string[]; alias: string; additive: boolean }
+  | { kind: 'LoadClassLib'; files: string[]; alias: string; additive: boolean; search?: string[][] }
   | { kind: 'AddProperty'; obj: number; name: string; value: VmValue }
   | { kind: 'MessageBox'; text: string; flags: number; title: string; timeout: number | null }
   | { kind: 'InputBox'; prompt: string; title: string; default: string; timeout: number | null; timeout_value: string }

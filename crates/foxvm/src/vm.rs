@@ -8601,13 +8601,15 @@ impl Vm {
         let additive = args.first().map(Value::truthy).transpose()?.unwrap_or(false);
         let alias = args.get(1).map(|v| v.as_str()).transpose()?.unwrap_or_default().trim().to_string();
         let mut files = Vec::new();
+        let mut search = Vec::new();
         for arg in args.iter().skip(2) {
             let name = arg.as_str()?.trim().to_string();
             if !name.is_empty() {
                 files.push(self.settings.class_library_at(&name));
+                search.push(self.settings.class_library_search(&name));
             }
         }
-        Ok(HostRequest::LoadClassLib { files, alias, additive })
+        Ok(HostRequest::LoadClassLib { files, alias, additive, search })
     }
 
     /// The bytes of the next index file to read, or nothing when they are all in and the
@@ -10139,11 +10141,33 @@ fn file_error(op: &str, errno: i64) -> RtError {
     RtError::new(code, format!("{text} ({op})"))
 }
 
+/// Writes `v` into a variable, through the reference when the variable is one.
+///
+/// A variable that holds an array and is given anything but an array keeps the array and puts
+/// the value in every element: `DIMENSION aSkip[1]` then `aSkip = ""` is how the Foundation
+/// Classes' movers start an empty list before ALEN(aSkip), and a class body's `aAll = "x"` was
+/// measured doing the same.
 fn write_through(slot: &mut Value, v: Value) {
     let v = value::held_in_variable(v.deref());
+    let fill = |held: &Value, v: &Value| match held {
+        Value::Array(a) if !matches!(v, Value::Array(_)) => {
+            a.borrow_mut().items.iter_mut().for_each(|item| *item = v.clone());
+            true
+        }
+        _ => false,
+    };
     match slot {
-        Value::Ref(cell) => *cell.borrow_mut() = v,
-        _ => *slot = v,
+        Value::Ref(cell) => {
+            let held = cell.borrow().clone();
+            if !fill(&held, &v) {
+                *cell.borrow_mut() = v;
+            }
+        }
+        _ => {
+            if !fill(slot, &v) {
+                *slot = v;
+            }
+        }
     }
 }
 

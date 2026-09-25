@@ -816,7 +816,7 @@ impl MockHost {
             // SET CLASSLIB TO: nothing here reads a `.vcx`, so what the mock host keeps is the
             // list the product reports - a file that is not on hand is refused the way the
             // product refuses one, and the answer is what SET("CLASSLIB") is to say.
-            HostRequest::LoadClassLib { files, alias, additive } => {
+            HostRequest::LoadClassLib { files, alias, additive, .. } => {
                 if !*additive {
                     self.class_libraries.clear();
                 }

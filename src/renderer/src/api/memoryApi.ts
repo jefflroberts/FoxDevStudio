@@ -455,11 +455,13 @@ export function createMemoryApi(seed: Record<string, string> = {}): MemoryApi {
         return new TextEncoder().encode(text);
       },
       async listDir(dir) {
-        const prefix = `${dir.replace(/[\\/]+$/, '')}/`;
+        // the folder is matched as exists() and readBytes() match a file, whatever its case, as
+        // Windows does: a library found on SET PATH arrives as `...\FFC` for files held under `ffc`
+        const prefix = `${dir.replace(/\\/g, '/').replace(/\/+$/, '')}/`.toLowerCase();
         const names = new Set<string>();
         for (const path of [...files.keys(), ...api.binary$.keys()]) {
           const normalised = path.replace(/\\/g, '/');
-          if (!normalised.startsWith(prefix)) continue;
+          if (!normalised.toLowerCase().startsWith(prefix)) continue;
           const rest = normalised.slice(prefix.length);
           if (!rest.includes('/')) names.add(rest);
         }
